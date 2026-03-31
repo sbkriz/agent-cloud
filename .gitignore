@@ -1,0 +1,26 @@
+# Secrets — never commit to public repo
+secrets/
+*.secret
+*.key
+*.pem
+
+# Runtime-generated env files (deploy.sh creates these from OpenBao)
+**/config/*.env
+!**/.env.example
+
+# Container data volumes
+data/
+
+# Build artifacts
+proxmox/cloud-init/autoinstall-seed.iso
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+plan/
+*UNIFICATION-PLAN.md

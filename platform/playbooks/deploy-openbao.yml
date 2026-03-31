@@ -1,0 +1,8 @@
+---
+# deploy-openbao.yml — Thin wrapper for deploy-service.yml
+# OpenBao bootstrap note: if OpenBao is not yet available to fetch the deploy key,
+# pass it manually: -e github_deploy_key="$(cat key)" or via Semaphore extra var.
+- name: "Deploy OpenBao"
+  import_playbook: deploy-service.yml
+  vars:
+    target_service: openbao

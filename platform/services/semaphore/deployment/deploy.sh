@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# deploy.sh — Deploy Semaphore with programmatic API token creation
+# Idempotent: safe to re-run on an existing deployment.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
+source "${LIB_DIR}/common.sh"
+source "${LIB_DIR}/bao-client.sh"
+
+SECRETS_DIR="${SCRIPT_DIR}/secrets"
+CONFIG_DIR="${SCRIPT_DIR}/config"
+SEMAPHORE_URL="${SEMAPHORE_URL:-http://localhost:${SEMAPHORE_PORT:-3000}}"
+OPENBAO_ADDR="${OPENBAO_ADDR:-http://127.0.0.1:8200}"
+
+# ── Step 1: Generate secrets & env file ───────────────────────────────────────
+
+step_generate_secrets() {
+  info "Step 1: Generating Semaphore secrets..."
+  mkdir -p "$SECRETS_DIR"
+  generate_semaphore_env "${CONFIG_DIR}/semaphore.env" "$SECRETS_DIR"
+}
+
+# ── Step 2: Start services ────────────────────────────────────────────────────
+
+step_start_services() {
+  info "Step 2: Starting Semaphore services..."
+  cd "$SCRIPT_DIR"
+  compose up -d
+  wait_for_http "${SEMAPHORE_URL}/api/ping" "Semaphore" 120
+}
+
+# ── Step 3: Bootstrap API token ───────────────────────────────────────────────
+
+step_bootstrap_credentials() {
+  info "Step 3: Bootstrapping Semaphore credentials..."
+  local api_token admin_pass
+  api_token=$(get_secret "$SECRETS_DIR" semaphore_api_token)
+  if ! needs_gen "$api_token"; then
+    info "  API token already exists — skipping bootstrap."
+    return 0
+  fi
+
+  admin_pass=$(get_secret "$SECRETS_DIR" semaphore_admin_password)
+  if needs_gen "$admin_pass"; then
+    warn "  No admin password found — skipping. Run deploy again after config generation."
+    return 0
+  fi
+
+  # Login to get session cookie
+  local cookie_jar login_response
+  cookie_jar=$(mktemp)
+  trap "rm -f '$cookie_jar'" EXIT INT TERM
+
+  local login_payload
+  login_payload=$(jq -n --arg pass "$admin_pass" '{"auth":"admin","password":$pass}')
+  login_response=$(curl -sf -c "$cookie_jar" -X POST "${SEMAPHORE_URL}/api/auth/login" \
+    -H "Content-Type: application/json" \
+    --data-raw "$login_payload" 2>/dev/null) || {
+    warn "  Login failed — API token creation deferred."
+    return 0
+  }
+  info "  Logged in."
+
+  # Check if token already exists
+  local existing_tokens
+  existing_tokens=$(curl -sf -b "$cookie_jar" "${SEMAPHORE_URL}/api/user/tokens" 2>/dev/null) || existing_tokens="[]"
+  local token_count
+  token_count=$(echo "$existing_tokens" | jq 'length' 2>/dev/null) || token_count=0
+
+  if [ "$token_count" -gt 0 ]; then
+    api_token=$(echo "$existing_tokens" | jq -r '.[0].id' 2>/dev/null) || api_token=""
+    if [ -n "$api_token" ]; then
+      put_secret "$SECRETS_DIR" semaphore_api_token "$api_token"
+      info "  Reusing existing API token."
+      return 0
+    fi
+  fi
+
+  # Create new token
+  local token_response
+  token_response=$(curl -sf -b "$cookie_jar" -X POST "${SEMAPHORE_URL}/api/user/tokens" \
+    -H "Content-Type: application/json" 2>/dev/null) || true
+
+  api_token=$(echo "${token_response:-}" | jq -r '.id // empty' 2>/dev/null) || api_token=""
+
+  if [ -n "$api_token" ]; then
+    put_secret "$SECRETS_DIR" semaphore_api_token "$api_token"
+    info "  API token created and saved."
+  else
+    warn "  API token creation failed — may need manual creation."
+  fi
+}
+
+# ── Step 4: Store token in OpenBao ────────────────────────────────────────────
+
+step_store_in_openbao() {
+  info "Step 4: Storing Semaphore token in OpenBao..."
+  store_token_in_openbao "$SECRETS_DIR" semaphore_api_token "services/semaphore" api_token
+}
+
+# ── Step 5: Validate ──────────────────────────────────────────────────────────
+
+step_validate() {
+  info "Step 5: Validating Semaphore deployment..."
+  local api_token
+
+  check_http "${SEMAPHORE_URL}/api/ping" "Health"
+
+  api_token=$(get_secret "$SECRETS_DIR" semaphore_api_token)
+  if ! needs_gen "$api_token"; then
+    check_http "${SEMAPHORE_URL}/api/projects" "API token" "Authorization" "Bearer ${api_token}"
+  else
+    warn "  API token: not yet created"
+  fi
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+main() {
+  info "=== Semaphore Deployment ==="
+  detect_runtime
+
+  step_generate_secrets
+  step_start_services
+  step_bootstrap_credentials
+  step_store_in_openbao
+  step_validate
+
+  info "=== Semaphore deployment complete ==="
+}
+
+main "$@"

@@ -1,0 +1,42 @@
+services:
+  semaphore-db:
+    container_name: workflow-semaphore-db
+    image: docker.io/postgres:16
+    restart: always
+    env_file: ./config/semaphore.env
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U semaphore"]
+      interval: 10s
+      timeout: 15s
+      retries: 5
+    volumes:
+      - semaphore_db_data:/var/lib/postgresql/data
+
+  semaphore:
+    container_name: workflow-semaphore
+    image: docker.io/semaphoreui/semaphore:latest
+    restart: always
+    ports:
+      - "${SEMAPHORE_LISTEN:-127.0.0.1}:${SEMAPHORE_PORT:-3000}:3000"
+    env_file: ./config/semaphore.env
+    environment:
+      SEMAPHORE_DB_DIALECT: postgres
+      SEMAPHORE_DB_HOST: semaphore-db
+      SEMAPHORE_DB_NAME: semaphore
+      SEMAPHORE_DB_USER: semaphore
+      SEMAPHORE_ADMIN: admin
+      SEMAPHORE_ADMIN_NAME: Admin
+      SEMAPHORE_ADMIN_EMAIL: admin@localhost
+    depends_on:
+      semaphore-db:
+        condition: service_healthy
+    volumes:
+      - semaphore_data:/var/lib/semaphore
+      - semaphore_config:/etc/semaphore
+      - semaphore_tmp:/tmp/semaphore
+
+volumes:
+  semaphore_db_data:
+  semaphore_data:
+  semaphore_config:
+  semaphore_tmp:
