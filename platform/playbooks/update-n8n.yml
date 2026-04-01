@@ -1,0 +1,5 @@
+---
+- name: "Update n8n"
+  import_playbook: update-service.yml
+  vars:
+    target_service: n8n_svc

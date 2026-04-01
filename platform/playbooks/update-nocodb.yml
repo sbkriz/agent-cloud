@@ -1,0 +1,5 @@
+---
+- name: "Update NocoDB"
+  import_playbook: update-service.yml
+  vars:
+    target_service: nocodb_svc

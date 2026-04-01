@@ -1,0 +1,5 @@
+---
+- name: "Update NetBox"
+  import_playbook: update-service.yml
+  vars:
+    target_service: netbox_svc

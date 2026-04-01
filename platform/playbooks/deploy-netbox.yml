@@ -1,0 +1,6 @@
+---
+# deploy-netbox.yml — Thin wrapper for deploy-service.yml
+- name: "Deploy NetBox"
+  import_playbook: deploy-service.yml
+  vars:
+    target_service: netbox_svc

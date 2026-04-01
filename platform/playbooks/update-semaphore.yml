@@ -1,0 +1,5 @@
+---
+- name: "Update Semaphore"
+  import_playbook: update-service.yml
+  vars:
+    target_service: semaphore_svc
