@@ -2,17 +2,13 @@
 # clone-and-deploy.yml — Shared task list for monorepo-based service deployment
 #
 # Expected variables (from inventory or extra vars):
-#   monorepo_repo         — Git SSH URL (e.g., git@github.com:uhstray-io/agent-cloud.git)
+#   monorepo_repo         — HTTPS git URL (public repo, no credentials needed)
 #   monorepo_deploy_path  — Path within monorepo (e.g., platform/services/nocodb/deployment)
 #   service_name          — Short name for the service (e.g., nocodb)
 #   service_url           — Base URL for health check (optional)
 #   health_path           — Health endpoint path (optional)
 #   health_status_codes   — Accepted HTTP codes (default [200])
-#   openbao_addr          — OpenBao address for deploy.sh
-#
-# OpenBao connection (from Semaphore environment):
-#   bao_role_id / BAO_ROLE_ID
-#   bao_secret_id / BAO_SECRET_ID
+#   openbao_addr          — OpenBao address for deploy.sh (via _bao_url)
 
 - name: "Install git if needed"
   ansible.builtin.apt:
@@ -20,57 +16,12 @@
     state: present
   become: true
 
-- name: "Add GitHub to known hosts"
-  ansible.builtin.known_hosts:
-    name: github.com
-    key: "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
-    state: present
-
-# Fetch deploy key and clone monorepo.
-# Wrapped in block/always to guarantee temp key cleanup on failure.
-- name: "Clone monorepo and deploy {{ service_name }}"
-  block:
-    - name: "Fetch GitHub deploy key from OpenBao"
-      ansible.builtin.set_fact:
-        _github_deploy_key: "{{ lookup('community.hashi_vault.hashi_vault',
-          'secret/data/services/github:deploy_key',
-          url=_bao_url, auth_method='approle',
-          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-      when: github_deploy_key is not defined
-
-    - name: "Use provided deploy key (bootstrap/override)"
-      ansible.builtin.set_fact:
-        _github_deploy_key: "{{ github_deploy_key }}"
-      when: github_deploy_key is defined
-
-    - name: "Write deploy key to temp file"
-      ansible.builtin.tempfile:
-        state: file
-        prefix: ".deploy_key_"
-      register: _key_tempfile
-
-    - name: "Set deploy key contents"
-      ansible.builtin.copy:
-        content: "{{ _github_deploy_key }}\n"
-        dest: "{{ _key_tempfile.path }}"
-        mode: "0600"
-      no_log: true
-
-    - name: "Clone or update agent-cloud monorepo"
-      ansible.builtin.git:
-        repo: "{{ monorepo_repo }}"
-        dest: "{{ _monorepo_dir }}"
-        version: "{{ _branch }}"
-        force: true
-        accept_hostkey: false
-        key_file: "{{ _key_tempfile.path }}"
-
-  always:
-    - name: "Remove temp deploy key"
-      ansible.builtin.file:
-        path: "{{ _key_tempfile.path | default('') }}"
-        state: absent
-      when: _key_tempfile.path is defined
+- name: "Clone or update agent-cloud monorepo"
+  ansible.builtin.git:
+    repo: "{{ monorepo_repo }}"
+    dest: "{{ _monorepo_dir }}"
+    version: "{{ _branch }}"
+    force: true
 
 - name: "Create convenience symlink ~/{{ service_name }}"
   ansible.builtin.file:

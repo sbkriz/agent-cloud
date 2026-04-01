@@ -69,7 +69,7 @@ all:
           monorepo_deploy_path: agents/nemoclaw/deployment
 
   vars:
-    monorepo_repo: "git@github.com:uhstray-io/agent-cloud.git"
+    monorepo_repo: "https://github.com/uhstray-io/agent-cloud.git"
     openbao_addr: "http://localhost:8200"
 
     # Proxmox API (credentials fetched from OpenBao at runtime)
