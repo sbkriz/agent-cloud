@@ -22,6 +22,7 @@
     dest: "{{ _monorepo_dir }}"
     version: "{{ _branch }}"
     force: true
+  become: false
 
 - name: "Create convenience symlink ~/{{ service_name }}"
   ansible.builtin.file:
@@ -29,12 +30,14 @@
     dest: "{{ ansible_env.HOME | default('/home/' + ansible_user) }}/{{ service_name }}"
     state: link
     force: true
+  become: false
   ignore_errors: true
 
 - name: "Run {{ service_name }} deploy.sh"
   ansible.builtin.shell: |
     cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     bash deploy.sh
+  become: false
   environment:
     OPENBAO_ADDR: "{{ _bao_url }}"
     NOCODB_URL: "{{ nocodb_url | default('') }}"
