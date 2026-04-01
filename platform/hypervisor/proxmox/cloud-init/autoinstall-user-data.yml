@@ -6,7 +6,8 @@ autoinstall:
     layout: us
   identity:
     hostname: ubuntu-template
-    username: uhstray
+    # Set to match ansible_user in site-config inventory
+    username: CHANGE_ME
     # Locked account — SSH key auth only. Cloud-init overrides on cloned VMs.
     password: "!"
   ssh:
@@ -76,5 +77,6 @@ autoinstall:
     - curtin in-target -- rm -f /var/lib/dbus/machine-id
     - curtin in-target -- rm -f /etc/ssh/ssh_host_*
     - 'sed -i "s/^#*PermitRootLogin.*/PermitRootLogin no/" /target/etc/ssh/sshd_config'
-    - 'echo "uhstray ALL=(ALL) NOPASSWD:ALL" > /target/etc/sudoers.d/uhstray'
-    - 'chmod 440 /target/etc/sudoers.d/uhstray'
+    # NOPASSWD sudo — replace CHANGE_ME with the username from site-config
+    - 'echo "CHANGE_ME ALL=(ALL) NOPASSWD:ALL" > /target/etc/sudoers.d/CHANGE_ME'
+    - 'chmod 440 /target/etc/sudoers.d/CHANGE_ME'

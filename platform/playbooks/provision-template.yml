@@ -167,7 +167,7 @@
           ide1: "none,media=cdrom"
           ide2: "{{ _storage }}:cloudinit"
           boot: "order=scsi0"
-          ciuser: "uhstray"
+          ciuser: "{{ ci_user | default(ansible_user) }}"
           sshkeys: "{{ _ssh_pub | urlencode }}"
           ipconfig0: "ip=dhcp"
           nameserver: "{{ nameserver | default(gateway | default('')) }}"
@@ -184,7 +184,7 @@
         msg: |
           Template {{ _vmid }} ({{ _name }}) created on {{ _node }}.
           Storage: {{ _storage }}, Disk: {{ _disk }}
-          Cloud-init enabled with user 'uhstray'. Ready for cloning.
+          Cloud-init enabled. Ready for cloning.
 
 - name: "Post-validate: Template exists and is ready"
   ansible.builtin.import_playbook: proxmox-validate.yml

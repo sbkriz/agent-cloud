@@ -144,7 +144,7 @@
           memory: "{{ _mem }}"
           agent: "1"
           net0: "virtio,bridge={{ _bridge }},firewall=0"
-          ciuser: "uhstray"
+          ciuser: "{{ ci_user | default(ansible_user) }}"
           sshkeys: "{{ _ssh_pub | urlencode }}"
           ipconfig0: "ip={{ _ip }}/{{ _netmask }},gw={{ _gw }}"
           nameserver: "{{ _dns }}"
@@ -223,8 +223,8 @@
       ansible.builtin.command:
         cmd: >
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10
-          -i "{{ ssh_private_key_path | default('/home/uhstray/.ssh/uhstray_ed25519') }}"
-          uhstray@{{ _ip }} "hostname && uname -a && cloud-init status"
+          -i "{{ ssh_private_key_path | default('') }}"
+          {{ ci_user | default(ansible_user) }}@{{ _ip }} "hostname && uname -a && cloud-init status"
       register: ssh_test
       retries: 3
       delay: 15
@@ -241,8 +241,8 @@
       ansible.builtin.command:
         cmd: >
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10
-          -i "{{ ssh_private_key_path | default('/home/uhstray/.ssh/uhstray_ed25519') }}"
-          uhstray@{{ _ip }}
+          -i "{{ ssh_private_key_path | default('') }}"
+          {{ ci_user | default(ansible_user) }}@{{ _ip }}
           "sudo tee /etc/semaphore/runner.env > /dev/null <<'ENVFILE'
           SEMAPHORE_WEB_ROOT={{ _semaphore_url }}
           SEMAPHORE_RUNNER_TOKEN={{ _runner_token }}
@@ -262,7 +262,7 @@
       ansible.builtin.debug:
         msg: |
           VM {{ _vmid }} ({{ _name }}) provisioned on {{ _node }}:
-            IP: {{ _ip }}, SSH: uhstray@{{ _ip }}
+            IP: {{ _ip }}, SSH: {{ ci_user | default(ansible_user) }}@{{ _ip }}
             Status: {{ 'running' if vm_running.json.data.status == 'running' else 'check' }}
             Agent: {{ 'ok' if (agent_ping is defined and agent_ping.status == 200) else 'pending' }}
             SSH: {{ 'ok' if ssh_ready is succeeded else 'pending' }}

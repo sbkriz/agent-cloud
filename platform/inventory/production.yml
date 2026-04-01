@@ -52,7 +52,7 @@ all:
           monorepo_deploy_path: agents/nemoclaw/deployment
 
   vars:
-    ansible_user: "{{ ansible_user | default('uhstray') }}"
+    ansible_user: "{{ ansible_user }}"
     ansible_become: false
     monorepo_repo: "git@github.com:uhstray-io/agent-cloud.git"
     openbao_addr: "http://{{ openbao_host }}:8200"

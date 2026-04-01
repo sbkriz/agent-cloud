@@ -75,7 +75,7 @@
 - name: "Create convenience symlink ~/{{ service_name }}"
   ansible.builtin.file:
     src: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    dest: "{{ ansible_env.HOME | default('/home/' + ansible_user | default('uhstray')) }}/{{ service_name }}"
+    dest: "{{ ansible_env.HOME | default('/home/' + ansible_user) }}/{{ service_name }}"
     state: link
     force: true
   ignore_errors: true

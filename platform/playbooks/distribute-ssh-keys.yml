@@ -12,7 +12,7 @@
   become: false
   vars:
     target_service: "ungrouped"
-    _ssh_user: "{{ ansible_user | default('uhstray') }}"
+    _ssh_user: "{{ ansible_user }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
@@ -75,7 +75,7 @@
   become: false
   vars:
     target_service: "ungrouped"
-    _ssh_user: "{{ ansible_user | default('uhstray') }}"
+    _ssh_user: "{{ ansible_user }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"

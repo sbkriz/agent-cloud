@@ -17,7 +17,7 @@
   gather_facts: false
   vars:
     target_service: "ungrouped"
-    _monorepo_dir: "/home/{{ ansible_user | default('uhstray') }}/agent-cloud"
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
     _branch: "{{ service_branch | default('main') }}"
 
     # OpenBao connection (AppRole credentials from Semaphore environment)

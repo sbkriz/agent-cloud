@@ -22,7 +22,7 @@
   become: true
   vars:
     target_service: "ungrouped"
-    _ssh_user: "{{ ansible_user | default('uhstray') }}"
+    _ssh_user: "{{ ansible_user }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
@@ -102,7 +102,7 @@
   vars:
     target_service: "ungrouped"
     skip_lockdown: false
-    _ssh_user: "{{ ansible_user | default('uhstray') }}"
+    _ssh_user: "{{ ansible_user }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
@@ -193,6 +193,13 @@
       ansible.builtin.meta: end_play
       when: skip_lockdown | bool
 
+    - name: "Configure NOPASSWD sudo for {{ ansible_user }}"
+      ansible.builtin.copy:
+        content: "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        dest: "/etc/sudoers.d/{{ ansible_user }}"
+        mode: "0440"
+        validate: "visudo -cf %s"
+
     - name: "Harden /etc/ssh/sshd_config"
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
@@ -256,7 +263,7 @@
               -o ConnectTimeout=10
               -o StrictHostKeyChecking=accept-new
               -o PubkeyAuthentication=no
-              {{ ansible_user | default('uhstray') }}@{{ ansible_host | default(inventory_hostname) }}
+              {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
               echo SHOULD_NOT_REACH
       delegate_to: localhost
       register: _pw_test
@@ -280,7 +287,7 @@
               -o StrictHostKeyChecking=accept-new
               -o PasswordAuthentication=no
               -o PubkeyAuthentication=yes
-              {{ ansible_user | default('uhstray') }}@{{ ansible_host | default(inventory_hostname) }}
+              {{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}
               echo KEY_AUTH_OK
       delegate_to: localhost
       register: _post_key_test
