@@ -1,5 +1,110 @@
 ---
-# deploy-netbox.yml — Thin wrapper for deploy-service.yml
+# deploy-netbox.yml — Deploy NetBox with Docker prerequisite
+#
+# Pre-deploy:
+#   1. Install Docker CE (official repo) if not present
+#   2. Add ansible_user to docker group
+#   3. Remove legacy deployment if present
+#
+# Then runs the standard clone-and-deploy flow.
+
+- name: "Pre-deploy: Prepare NetBox VM"
+  hosts: netbox_svc
+  gather_facts: true
+  become: true
+  vars:
+    _user: "{{ ansible_user }}"
+
+  tasks:
+    - name: "Check if Docker is installed"
+      ansible.builtin.command: docker --version
+      register: _docker_check
+      changed_when: false
+      failed_when: false
+
+    - name: "Install Docker CE"
+      when: _docker_check.rc != 0
+      block:
+        - name: "Install prerequisites"
+          ansible.builtin.apt:
+            name:
+              - ca-certificates
+              - curl
+            state: present
+            update_cache: true
+
+        - name: "Create keyrings directory"
+          ansible.builtin.file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: "0755"
+
+        - name: "Add Docker GPG key"
+          ansible.builtin.get_url:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            dest: /etc/apt/keyrings/docker.asc
+            mode: "0644"
+
+        - name: "Get architecture"
+          ansible.builtin.command: dpkg --print-architecture
+          register: _arch
+          changed_when: false
+
+        - name: "Get Ubuntu codename"
+          ansible.builtin.shell: . /etc/os-release && echo "${VERSION_CODENAME}"
+          register: _codename
+          changed_when: false
+
+        - name: "Add Docker apt repository"
+          ansible.builtin.apt_repository:
+            repo: "deb [arch={{ _arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ _codename.stdout }} stable"
+            state: present
+            filename: docker
+
+        - name: "Install Docker packages"
+          ansible.builtin.apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+            update_cache: true
+
+    - name: "Add {{ _user }} to docker group"
+      ansible.builtin.user:
+        name: "{{ _user }}"
+        groups: docker
+        append: true
+
+    - name: "Ensure Docker service is running"
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: "Remove legacy netbox deployment (if present)"
+      ansible.builtin.file:
+        path: "/home/{{ _user }}/netbox"
+        state: absent
+
+    - name: "Remove stale agent-cloud clone (if present)"
+      ansible.builtin.file:
+        path: "/home/{{ _user }}/agent-cloud"
+        state: absent
+
+    - name: "Verify Docker"
+      ansible.builtin.command: docker --version
+      become: false
+      register: _docker_ver
+      changed_when: false
+
+    - name: "Docker ready"
+      ansible.builtin.debug:
+        msg: "{{ _docker_ver.stdout }}"
+
+# ── Standard deploy flow ─────────────────────────────────────────────────────
 - name: "Deploy NetBox"
   import_playbook: deploy-service.yml
   vars:
