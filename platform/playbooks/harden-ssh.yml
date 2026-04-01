@@ -142,50 +142,90 @@
   vars:
     target_service: "ungrouped"
     skip_lockdown: false
+    _sshd_settings:
+      - { regexp: '^#?\s*PubkeyAuthentication',              line: 'PubkeyAuthentication yes' }
+      - { regexp: '^#?\s*PasswordAuthentication',             line: 'PasswordAuthentication no' }
+      - { regexp: '^#?\s*ChallengeResponseAuthentication',    line: 'ChallengeResponseAuthentication no' }
+      - { regexp: '^#?\s*KbdInteractiveAuthentication',       line: 'KbdInteractiveAuthentication no' }
+      - { regexp: '^#?\s*PermitRootLogin',                    line: 'PermitRootLogin no' }
 
   tasks:
     - name: "Skip lockdown if requested"
       ansible.builtin.meta: end_play
       when: skip_lockdown | bool
 
-    - name: "Disable password authentication"
+    - name: "Harden /etc/ssh/sshd_config"
       ansible.builtin.lineinfile:
         path: /etc/ssh/sshd_config
-        regexp: '^#?PasswordAuthentication'
-        line: 'PasswordAuthentication no'
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
         backup: true
+      loop: "{{ _sshd_settings }}"
+      loop_control:
+        label: "{{ item.line }}"
       notify: Restart sshd for lockdown
 
-    - name: "Disable challenge-response authentication"
+    - name: "Find all sshd_config.d override files"
+      ansible.builtin.find:
+        paths: /etc/ssh/sshd_config.d
+        patterns: "*.conf"
+      register: _sshd_overrides
+
+    - name: "Harden each sshd_config.d override file"
       ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?ChallengeResponseAuthentication'
-        line: 'ChallengeResponseAuthentication no'
+        path: "{{ item.0.path }}"
+        regexp: "{{ item.1.regexp }}"
+        line: "{{ item.1.line }}"
+      loop: "{{ _sshd_overrides.files | product(_sshd_settings) | list }}"
+      loop_control:
+        label: "{{ item.0.path | basename }}: {{ item.1.line }}"
+      when: _sshd_overrides.files | length > 0
       notify: Restart sshd for lockdown
 
-    - name: "Disable root login"
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PermitRootLogin'
-        line: 'PermitRootLogin no'
-      notify: Restart sshd for lockdown
+    - name: "Flush handlers to restart sshd now"
+      ansible.builtin.meta: flush_handlers
 
-    - name: "Check for cloud-init sshd override"
-      ansible.builtin.stat:
-        path: /etc/ssh/sshd_config.d/50-cloud-init.conf
-      register: _cloud_init_sshd
+    - name: "Post-lockdown: verify password auth is rejected"
+      ansible.builtin.command:
+        cmd: >
+          ssh -o BatchMode=yes
+              -o ConnectTimeout=10
+              -o StrictHostKeyChecking=accept-new
+              -o PubkeyAuthentication=no
+              -o PasswordAuthentication=yes
+              {{ ansible_user | default('uhstray') }}@{{ ansible_host | default(inventory_hostname) }}
+              echo SHOULD_NOT_REACH
+      delegate_to: localhost
+      register: _pw_test
+      failed_when: _pw_test.rc == 0
+      changed_when: false
+      ignore_errors: true
 
-    - name: "Fix cloud-init PasswordAuthentication override"
-      ansible.builtin.lineinfile:
-        path: /etc/ssh/sshd_config.d/50-cloud-init.conf
-        regexp: '^PasswordAuthentication'
-        line: 'PasswordAuthentication no'
-      when: _cloud_init_sshd.stat.exists
-      notify: Restart sshd for lockdown
+    - name: "Confirm password auth is disabled"
+      ansible.builtin.assert:
+        that:
+          - _pw_test.rc != 0
+        fail_msg: "WARNING: Password auth still works on {{ service_name }} — lockdown incomplete!"
+        success_msg: "{{ service_name }}: password auth correctly REJECTED"
+
+    - name: "Post-lockdown: verify key auth still works"
+      ansible.builtin.command:
+        cmd: >
+          ssh -o BatchMode=yes
+              -o ConnectTimeout=10
+              -o StrictHostKeyChecking=accept-new
+              -o PasswordAuthentication=no
+              -o PubkeyAuthentication=yes
+              {{ ansible_user | default('uhstray') }}@{{ ansible_host | default(inventory_hostname) }}
+              echo KEY_AUTH_OK
+      delegate_to: localhost
+      register: _post_key_test
+      failed_when: "'KEY_AUTH_OK' not in _post_key_test.stdout"
+      changed_when: false
 
     - name: "Lockdown complete"
       ansible.builtin.debug:
-        msg: "{{ service_name }}: sshd hardened — password auth disabled, root login disabled"
+        msg: "{{ service_name }}: sshd hardened — password REJECTED, key auth CONFIRMED, root login disabled"
 
   handlers:
     - name: Restart sshd for lockdown
