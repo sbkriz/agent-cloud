@@ -1,0 +1,111 @@
+---
+# harden-ssh.yml — Deploy per-service SSH keys and lock down sshd
+#
+# Usage via Semaphore:
+#   Template extra var: -e "target_service=netbox_svc"
+#   Or target all agent-cloud VMs: -e "target_service=agent_cloud"
+#
+# What this playbook does (all additive, non-destructive):
+#   1. Fetches management + per-service SSH public keys from OpenBao
+#   2. Adds both to authorized_keys (does not remove existing keys)
+#   3. Hardens sshd_config (disable password auth, root login)
+#   4. Fixes cloud-init sshd overrides
+#   5. Restarts sshd
+#
+# Requires: community.hashi_vault collection, OpenBao AppRole creds in environment
+
+- name: "Harden SSH on {{ target_service | default('(unset)') }}"
+  hosts: "{{ target_service }}"
+  gather_facts: true
+  become: true
+  vars:
+    target_service: "ungrouped"
+    _ssh_user: "{{ ansible_user | default('uhstray') }}"
+
+    # OpenBao connection (from Semaphore environment)
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Validate service_name is defined"
+      ansible.builtin.assert:
+        that:
+          - service_name is defined
+        fail_msg: "Host must have service_name defined in inventory"
+
+    - name: "Fetch management SSH public key from OpenBao"
+      ansible.builtin.set_fact:
+        _mgmt_pub_key: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/ssh:public_key',
+          url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+
+    - name: "Fetch per-service SSH public key from OpenBao"
+      ansible.builtin.set_fact:
+        _svc_pub_key: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/ssh/' + service_name + ':public_key',
+          url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+
+    - name: "Ensure .ssh directory exists"
+      ansible.builtin.file:
+        path: "/home/{{ _ssh_user }}/.ssh"
+        state: directory
+        owner: "{{ _ssh_user }}"
+        group: "{{ _ssh_user }}"
+        mode: "0700"
+
+    - name: "Deploy management SSH public key"
+      ansible.posix.authorized_key:
+        user: "{{ _ssh_user }}"
+        key: "{{ _mgmt_pub_key }}"
+        state: present
+
+    - name: "Deploy per-service SSH public key"
+      ansible.posix.authorized_key:
+        user: "{{ _ssh_user }}"
+        key: "{{ _svc_pub_key }}"
+        state: present
+
+    - name: "Harden sshd_config"
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        backup: true
+      loop:
+        - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+        - { regexp: '^#?ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+      notify: Restart sshd
+
+    - name: "Check for cloud-init sshd override"
+      ansible.builtin.stat:
+        path: /etc/ssh/sshd_config.d/50-cloud-init.conf
+      register: _cloud_init_sshd
+
+    - name: "Fix cloud-init PasswordAuthentication override"
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config.d/50-cloud-init.conf
+        regexp: '^PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      when: _cloud_init_sshd.stat.exists
+      notify: Restart sshd
+
+    - name: "Verify authorized_keys has both keys"
+      ansible.builtin.shell: |
+        wc -l /home/{{ _ssh_user }}/.ssh/authorized_keys | awk '{print $1}'
+      register: _key_count
+      changed_when: false
+
+    - name: "Report key count"
+      ansible.builtin.debug:
+        msg: "{{ service_name }}: {{ _key_count.stdout }} keys in authorized_keys"
+
+  handlers:
+    - name: Restart sshd
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
