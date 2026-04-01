@@ -15,6 +15,7 @@
 - name: "Deploy {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service }}"
   gather_facts: false
+  become: false
   vars:
     target_service: "ungrouped"
     _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
