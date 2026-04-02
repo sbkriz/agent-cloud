@@ -145,11 +145,12 @@ sync_postgres_passwords
 # containers are resolvable via Docker DNS, it fails with name resolution errors.
 info "Step 8/17: Starting backing services..."
 compose up -d postgres redis redis-cache diode-redis
-sleep 5
+info "  Waiting for backing services to be ready..."
+sleep 15
 
 info "Step 8/17: Starting Hydra + migrations..."
 compose up -d hydra hydra-migrate
-wait_for_completed "hydra-migrate" 120
+wait_for_completed "hydra-migrate" 300
 
 info "Step 8/17: Starting application services..."
 compose up -d || { warn "Some containers failed to start — retrying..."; sleep 10; compose up -d; }
