@@ -53,25 +53,25 @@ The homelab has specific network management gaps that NetClaw addresses directly
 Deploy NetClaw on its own VM as a standalone OpenClaw agent, communicating with the existing service layer through the same APIs NemoClaw uses.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ Existing Workflow Agents Stack                                   │
-│                                                                  │
+┌────────────────────────────────────────────────────────────────┐
+│ Existing Workflow Agents Stack                                 │
+│                                                                │
 │  ┌──────────┐  ┌──────────┐  ┌──────┐  ┌───────────┐           │
-│  │ OpenBao  │  │  NocoDB   │  │  n8n │  │ Semaphore │           │
-│  │ .164     │  │  .161     │  │ .118 │  │  .117     │           │
+│  │ OpenBao  │  │  NocoDB  │  │  n8n │  │ Semaphore │           │
+│  │ .164     │  │  .161    │  │ .118 │  │  .117     │           │
 │  └──────────┘  └──────────┘  └──────┘  └───────────┘           │
-│       ↑              ↑           ↑          ↑                    │
-│       │              │           │          │                    │
-│  ┌────┴──────────────┴───────────┴──────────┴────────┐          │
-│  │                    OpenBao AppRole                  │          │
-│  └────┬──────────────┬───────────────────────────────┘          │
-│       │              │                                           │
+│       ↑              ↑           ↑          ↑                  │
+│       │              │           │          │                  │
+│  ┌────┴──────────────┴───────────┴──────────┴────────┐         │
+│  │                    OpenBao AppRole                │         │
+│  └────┬──────────────┬───────────────────────────────┘         │
+│       │              │                                         │
 │  ┌────┴────┐    ┌────┴────┐    ┌───────────┐  ┌──────────┐     │
 │  │NemoClaw │    │NetClaw  │    │  NetBox   │  │ Proxmox  │     │
 │  │  .163   │    │  NEW VM │    │   .116    │  │   .52    │     │
 │  │(Docker) │    │(Docker) │    │           │  │          │     │
 │  └─────────┘    └─────────┘    └───────────┘  └──────────┘     │
-└─────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
 ```
 
 **Pros:** Independent failure domain, dedicated resources for MCP servers (some are memory-hungry), can run different OpenClaw versions, separate network policy (NetClaw needs broader network access than NemoClaw for device polling).
