@@ -92,51 +92,54 @@ info "Step 3/17: Generating secrets..."
 chmod +x lib/generate-secrets.sh discovery/init-db.sh
 ./lib/generate-secrets.sh "${NETBOX_URL}"
 
-# ─── Step 3b: Store secrets in OpenBao ──────────────────────────────
-if [ -n "${OPENBAO_ADDR:-}" ] && [ "$OPENBAO_ADDR" != "http://127.0.0.1:8200" ]; then
-  info "Step 3b/17: Storing secrets in OpenBao..."
-  PLATFORM_LIB="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
-  if [ -f "${PLATFORM_LIB}/bao-client.sh" ]; then
-    source "${PLATFORM_LIB}/bao-client.sh"
-    if bao_health; then
-      # Authenticate via AppRole (role-id/secret-id from OpenBao deploy)
-      BAO_ROLE_ID="${BAO_ROLE_ID:-}"
-      BAO_SECRET_ID="${BAO_SECRET_ID:-}"
-      if [ -n "$BAO_ROLE_ID" ] && [ -n "$BAO_SECRET_ID" ]; then
-        BAO_TOKEN=$(curl -sf -X POST \
-          -H "Content-Type: application/json" \
-          "${OPENBAO_ADDR}/v1/auth/approle/login" \
-          -d "$(jq -n --arg r "$BAO_ROLE_ID" --arg s "$BAO_SECRET_ID" '{"role_id":$r,"secret_id":$s}')" \
-          | jq -r '.auth.client_token')
-        export BAO_TOKEN
-      fi
+# ─── Step 3b: Store secrets in OpenBao (REQUIRED) ───────────────────
+# All deployments MUST store secrets in OpenBao. If OpenBao is unreachable
+# or credentials are missing, the deploy MUST fail — not skip silently.
+# This ensures no service runs with unmanaged credentials.
+# To run: deploy via Semaphore (which injects OPENBAO_ADDR + AppRole creds).
+info "Step 3b/17: Storing secrets in OpenBao..."
 
-      if [ -n "${BAO_TOKEN:-}" ] && [ "$BAO_TOKEN" != "null" ]; then
-        # Build JSON from all secrets in secrets/
-        SECRET_JSON=$(jq -n \
-          --arg superuser_password "$(get_secret superuser_password)" \
-          --arg postgres_password "$(get_secret postgres_password)" \
-          --arg redis_password "$(get_secret redis_password)" \
-          --arg secret_key "$(get_secret secret_key)" \
-          --arg api_token "$(get_secret api_token_peppers)" \
-          --arg url "${NETBOX_URL}" \
-          '{superuser_password:$superuser_password, postgres_password:$postgres_password,
-            redis_password:$redis_password, secret_key:$secret_key,
-            api_token:$api_token, url:$url}')
-        bao_kv_put "services/netbox" "$SECRET_JSON"
-        info "  Stored NetBox secrets in OpenBao at secret/services/netbox"
-      else
-        warn "  No OpenBao token available — skipping secret storage"
-      fi
-    else
-      warn "  OpenBao not reachable at ${OPENBAO_ADDR} — skipping secret storage"
-    fi
-  else
-    warn "  bao-client.sh not found — skipping OpenBao integration"
-  fi
-else
-  info "Step 3b/17: Skipping OpenBao (OPENBAO_ADDR not set or local)"
-fi
+[ -n "${OPENBAO_ADDR:-}" ] || error "OPENBAO_ADDR is not set. Deploy via Semaphore, not directly on the VM."
+
+PLATFORM_LIB="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
+[ -f "${PLATFORM_LIB}/bao-client.sh" ] || error "bao-client.sh not found at ${PLATFORM_LIB}. Is this running from the monorepo?"
+source "${PLATFORM_LIB}/bao-client.sh"
+
+bao_health || error "OpenBao not reachable at ${OPENBAO_ADDR}. Is it unsealed?"
+
+BAO_ROLE_ID="${BAO_ROLE_ID:-}"
+BAO_SECRET_ID="${BAO_SECRET_ID:-}"
+[ -n "$BAO_ROLE_ID" ] && [ -n "$BAO_SECRET_ID" ] || error "BAO_ROLE_ID and BAO_SECRET_ID must be set. Deploy via Semaphore."
+
+BAO_TOKEN=$(curl -sf -X POST \
+  -H "Content-Type: application/json" \
+  "${OPENBAO_ADDR}/v1/auth/approle/login" \
+  -d "$(jq -n --arg r "$BAO_ROLE_ID" --arg s "$BAO_SECRET_ID" '{"role_id":$r,"secret_id":$s}')" \
+  | jq -r '.auth.client_token')
+export BAO_TOKEN
+[ -n "$BAO_TOKEN" ] && [ "$BAO_TOKEN" != "null" ] || error "OpenBao AppRole authentication failed."
+
+SECRET_JSON=$(jq -n \
+  --arg superuser_password "$(get_secret superuser_password)" \
+  --arg postgres_password "$(get_secret postgres_password)" \
+  --arg redis_password "$(get_secret redis_password)" \
+  --arg redis_cache_password "$(get_secret redis_cache_password)" \
+  --arg secret_key "$(get_secret secret_key)" \
+  --arg api_token "$(get_secret api_token_peppers)" \
+  --arg diode_ingest_client_secret "$(get_secret diode_ingest_client_secret)" \
+  --arg diode_to_netbox_client_secret "$(get_secret diode_to_netbox_client_secret)" \
+  --arg netbox_to_diode_client_secret "$(get_secret netbox_to_diode_client_secret)" \
+  --arg hydra_system_secret "$(get_secret hydra_system_secret)" \
+  --arg url "${NETBOX_URL}" \
+  '{superuser_password:$superuser_password, postgres_password:$postgres_password,
+    redis_password:$redis_password, redis_cache_password:$redis_cache_password,
+    secret_key:$secret_key, api_token:$api_token, url:$url,
+    diode_ingest_client_secret:$diode_ingest_client_secret,
+    diode_to_netbox_client_secret:$diode_to_netbox_client_secret,
+    netbox_to_diode_client_secret:$netbox_to_diode_client_secret,
+    hydra_system_secret:$hydra_system_secret}')
+bao_kv_put "services/netbox" "$SECRET_JSON"
+info "  Stored all NetBox secrets in OpenBao at secret/services/netbox"
 
 # ─── Step 4: Pull latest images ────────────────────────────────────
 if [ "$SKIP_PULL" = false ]; then

@@ -64,6 +64,12 @@ These directories have their own detailed guidance:
 
 Defer to those files when working within those directories.
 
+## Critical Deployment Rules
+
+1. **All deployments go through Semaphore.** Never SSH into a VM and run `deploy.sh` directly. Semaphore injects `OPENBAO_ADDR`, `BAO_ROLE_ID`, and `BAO_SECRET_ID` via its environment — without these, secrets are generated but never stored in OpenBao, creating unmanaged credentials.
+2. **deploy.sh MUST fail if OpenBao is unreachable.** No service should run with credentials that aren't tracked in OpenBao. The `error()` function halts the deploy — it does not skip silently.
+3. **If debugging requires a manual run**, pass OpenBao credentials explicitly: `OPENBAO_ADDR=http://... BAO_ROLE_ID=... BAO_SECRET_ID=... bash deploy.sh`
+
 ## Secrets Management
 
 ### OpenBao as Source of Truth
