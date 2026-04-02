@@ -23,9 +23,9 @@ services:
         curl -f http://localhost:8080/login/ || exit 1
         /opt/netbox/netbox/manage.py showmigrations --plan | grep -q "\[ \]" && exit 1 || exit 0
       start_period: 180s
-      timeout: 10s
+      timeout: 30s
       interval: 30s
-      retries: 3
+      retries: 5
     environment:
       SKIP_SUPERUSER: "false"
       SUPERUSER_NAME: "admin"
