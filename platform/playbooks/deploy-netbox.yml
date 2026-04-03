@@ -150,14 +150,12 @@
       ansible.builtin.debug:
         msg: "Diode plugin secret mounted at /run/secrets/netbox_to_diode ({{ _diode_secret_check.stdout | length }} chars)"
 
-    - name: "Delete local secret file (container already read it)"
-      ansible.builtin.file:
-        path: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/secrets/netbox_to_diode_client_secret.txt"
-        state: absent
-
-    - name: "Remove secrets/ dir if empty"
-      ansible.builtin.shell: rmdir "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/secrets" 2>/dev/null || true
-      changed_when: false
+    # NOTE: Do NOT delete secrets/netbox_to_diode_client_secret.txt
+    # Docker bind-mounts are live — if the file is deleted, container
+    # restarts (e.g., step 15 discovery restart) will see an empty mount.
+    # The file must persist as long as the container is running.
+    # This is the one exception to "no secrets/ dir on VM" — Docker
+    # Compose bind-mounts require the source file to exist on the host.
 
 # ── Phase 4: Sync post-deploy credentials to OpenBao ─────────────────
 # post-deploy.sh may create new orb-agent credentials and write them to .env.
