@@ -48,7 +48,7 @@
       - { src: netbox.env.j2, dest: env/netbox.env }
       - { src: discovery.env.j2, dest: env/discovery.env }
       - { src: dot-env.j2, dest: .env }
-      - { src: hydra.yaml.j2, dest: discovery/hydra.yaml }
+      - { src: hydra.yaml.j2, dest: discovery/hydra.yaml, mode: "0644" }
 
   tasks:
     - name: "Install git if needed"

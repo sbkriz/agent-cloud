@@ -233,23 +233,55 @@ These replace `generate-secrets.sh`'s env file writing logic. Variables come fro
 
 ---
 
-## Semaphore Template Management
+## Configuration-as-Code for Deployments and Templates
 
-Semaphore task templates are managed as code, not created via ad-hoc API calls.
+All deployment configurations, Semaphore templates, and service settings are managed as code — not through manual UI actions or ad-hoc API calls.
 
-**Principle:** Every template exists in a declarative config file (`site-config/semaphore/templates.yml`). Changes to templates are made in the config file first, then applied via the `setup-templates.yml` playbook. No one-off API calls.
+### Principle: Templates Define the Deployment Surface
+
+Semaphore task templates are the interface between operators and the automation. Each template maps a human-readable name to a composable playbook. Templates are defined in `platform/semaphore/templates.yml` (public repo, no secrets) and applied via `platform/semaphore/setup-templates.yml`.
 
 **Implementation:**
-- `site-config/semaphore/templates.yml` — Declarative list of all task templates (name → playbook mapping)
-- `site-config/semaphore/setup-templates.yml` — Ansible playbook that reads the config and creates/updates templates via Semaphore API
+- `platform/semaphore/templates.yml` — Declarative list of all task templates (name → playbook mapping)
+- `platform/semaphore/setup-templates.yml` — Ansible playbook that creates/updates templates via Semaphore API
 - Idempotent: existing templates are updated, new ones are created
+- No secrets in templates — playbook paths only; credentials come from Semaphore environments
 
 **Adding a new template:**
-1. Add entry to `site-config/semaphore/templates.yml`
+1. Add entry to `platform/semaphore/templates.yml`
 2. Run `ansible-playbook semaphore/setup-templates.yml`
 3. Verify in Semaphore UI
 
 **Why not API calls:** Ad-hoc API calls are not tracked, not repeatable, and drift from the codebase. The config file is the source of truth for what templates should exist.
+
+### Principle: Env Files as Jinja2 Templates
+
+Service configuration files (`.env`, `env/*.env`, config YAML) are rendered from Jinja2 templates by Ansible's `manage-secrets.yml` task. This replaces bash `generate-secrets.sh` scripts.
+
+**Template design rules:**
+- Templates live in `platform/services/<name>/deployment/templates/`
+- Variables come from the `_resolved` dict (OpenBao secrets merged with generated values)
+- Secret-containing files get mode `0600` (default)
+- Config files that containers read (e.g., `hydra.yaml`) get mode `0644` via the `mode` field in `_env_templates`
+- Templates are Jinja2, not bash heredocs — supports conditionals, defaults, loops
+- Each template maps to one compose-consumed file
+
+**Template flow:**
+```
+templates/*.j2 (in monorepo, committed)
+  + secrets (from OpenBao, in Ansible memory)
+  = env files (on VM, gitignored, compose-readable)
+```
+
+### Principle: Clean Deploy for State Reset
+
+When secrets or database schemas change incompatibly, a clean deploy destroys volumes and starts fresh. This is a deliberate, tracked operation — not a manual `docker compose down -v`.
+
+**Implementation:**
+- `tasks/clean-service.yml` — composable task that destroys containers, volumes, clone
+- `clean-deploy-<service>.yml` — clean + deploy wrapper
+- Semaphore template "Clean Deploy <Service>" exposes this as a UI action
+- Destructive: requires explicit operator action, not triggered automatically
 
 ---
 
