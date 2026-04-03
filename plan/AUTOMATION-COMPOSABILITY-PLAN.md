@@ -233,6 +233,26 @@ These replace `generate-secrets.sh`'s env file writing logic. Variables come fro
 
 ---
 
+## Semaphore Template Management
+
+Semaphore task templates are managed as code, not created via ad-hoc API calls.
+
+**Principle:** Every template exists in a declarative config file (`site-config/semaphore/templates.yml`). Changes to templates are made in the config file first, then applied via the `setup-templates.yml` playbook. No one-off API calls.
+
+**Implementation:**
+- `site-config/semaphore/templates.yml` — Declarative list of all task templates (name → playbook mapping)
+- `site-config/semaphore/setup-templates.yml` — Ansible playbook that reads the config and creates/updates templates via Semaphore API
+- Idempotent: existing templates are updated, new ones are created
+
+**Adding a new template:**
+1. Add entry to `site-config/semaphore/templates.yml`
+2. Run `ansible-playbook semaphore/setup-templates.yml`
+3. Verify in Semaphore UI
+
+**Why not API calls:** Ad-hoc API calls are not tracked, not repeatable, and drift from the codebase. The config file is the source of truth for what templates should exist.
+
+---
+
 ## Migration Path
 
 1. **NetBox (current):** First service to implement full composable pattern
