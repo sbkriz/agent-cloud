@@ -1,0 +1,78 @@
+# Semaphore Task Templates — Declarative configuration
+# Applied by setup-templates.yml playbook
+#
+# Each template maps to a playbook in this monorepo.
+# No secrets or sensitive data — safe for public repo.
+
+templates:
+  # ── Deployment ─────────────────────────────────────────────────
+  - name: Deploy All Services
+    playbook: platform/playbooks/deploy-all.yml
+
+  - name: Deploy OpenBao
+    playbook: platform/playbooks/deploy-openbao.yml
+
+  - name: Deploy NocoDB
+    playbook: platform/playbooks/deploy-nocodb.yml
+
+  - name: Deploy n8n
+    playbook: platform/playbooks/deploy-n8n.yml
+
+  - name: Deploy Semaphore
+    playbook: platform/playbooks/deploy-semaphore.yml
+
+  - name: Deploy NetBox
+    playbook: platform/playbooks/deploy-netbox.yml
+
+  - name: Deploy NemoClaw
+    playbook: platform/playbooks/deploy-nemoclaw.yml
+
+  - name: Clean Deploy NetBox
+    playbook: platform/playbooks/clean-deploy-netbox.yml
+
+  # ── Updates ────────────────────────────────────────────────────
+  - name: Update NocoDB
+    playbook: platform/playbooks/update-nocodb.yml
+
+  - name: Update n8n
+    playbook: platform/playbooks/update-n8n.yml
+
+  - name: Update Semaphore
+    playbook: platform/playbooks/update-semaphore.yml
+
+  - name: Update NetBox
+    playbook: platform/playbooks/update-netbox.yml
+
+  # ── Validation ─────────────────────────────────────────────────
+  - name: Validate All Services
+    playbook: platform/playbooks/validate-all.yml
+
+  - name: Validate Proxmox Cluster
+    playbook: platform/playbooks/proxmox-validate.yml
+
+  # ── Secrets ────────────────────────────────────────────────────
+  - name: Check Secrets
+    playbook: platform/playbooks/check-secrets.yml
+
+  - name: Validate Secrets
+    playbook: platform/playbooks/validate-secrets.yml
+
+  - name: Sync Secrets to OpenBao
+    playbook: platform/playbooks/sync-secrets-to-openbao.yml
+
+  # ── SSH ────────────────────────────────────────────────────────
+  - name: Distribute SSH Keys
+    playbook: platform/playbooks/distribute-ssh-keys.yml
+
+  - name: Harden SSH
+    playbook: platform/playbooks/harden-ssh.yml
+
+  # ── Infrastructure ─────────────────────────────────────────────
+  - name: Install Docker
+    playbook: platform/playbooks/install-docker.yml
+
+  - name: Create VM Template
+    playbook: platform/playbooks/provision-template.yml
+
+  - name: Provision VM
+    playbook: platform/playbooks/provision-vm.yml

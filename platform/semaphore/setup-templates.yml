@@ -1,0 +1,80 @@
+---
+# setup-templates.yml — Apply Semaphore task templates from templates.yml
+#
+# Reads templates.yml and creates/updates task templates via Semaphore API.
+# Idempotent: existing templates updated, new ones created.
+#
+# Usage:
+#   SEMAPHORE_URL=http://... SEMAPHORE_TOKEN=... ansible-playbook setup-templates.yml
+#
+# Or via Semaphore environment variables.
+
+- name: "Apply Semaphore task templates"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _semaphore_url: "{{ lookup('env', 'SEMAPHORE_URL') }}"
+    _token: "{{ lookup('env', 'SEMAPHORE_TOKEN') }}"
+    _project_id: 1
+    _template_config: "{{ lookup('file', playbook_dir + '/templates.yml') | from_yaml }}"
+
+  tasks:
+    - name: "Validate environment"
+      ansible.builtin.assert:
+        that:
+          - _semaphore_url | length > 0
+          - _token | length > 0
+        fail_msg: "Set SEMAPHORE_URL and SEMAPHORE_TOKEN environment variables"
+
+    - name: "Get agent-cloud repository ID"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/repositories"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _repos
+
+    - name: "Set repo ID"
+      ansible.builtin.set_fact:
+        _repo_id: "{{ _repos.json | selectattr('name', 'equalto', 'agent-cloud') | map(attribute='id') | first }}"
+
+    - name: "Get existing templates"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+      register: _existing
+
+    - name: "Create or update each template"
+      ansible.builtin.uri:
+        url: >-
+          {{ _semaphore_url }}/api/project/{{ _project_id }}/templates{{
+            '/' ~ (_existing.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | first)
+            if (_existing.json | selectattr('name', 'equalto', item.name) | list | length > 0)
+            else ''
+          }}
+        method: >-
+          {{ 'PUT' if (_existing.json | selectattr('name', 'equalto', item.name) | list | length > 0) else 'POST' }}
+        headers:
+          Authorization: "Bearer {{ _token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          id: "{{ (_existing.json | selectattr('name', 'equalto', item.name) | map(attribute='id') | first) | default(omit) }}"
+          name: "{{ item.name }}"
+          project_id: "{{ _project_id }}"
+          inventory_id: 2
+          repository_id: "{{ _repo_id }}"
+          environment_id: 2
+          playbook: "{{ item.playbook }}"
+          app: ansible
+          autorun: false
+          suppress_success_alerts: true
+        status_code: [200, 201]
+      loop: "{{ _template_config.templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "Applied {{ _template_config.templates | length }} templates to Semaphore at {{ _semaphore_url }}"
