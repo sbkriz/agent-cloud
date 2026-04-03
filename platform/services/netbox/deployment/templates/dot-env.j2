@@ -1,0 +1,16 @@
+# Rendered by Ansible from OpenBao secrets — do not edit manually.
+# Used by docker compose for variable substitution in docker-compose.yml.
+HYDRA_POSTGRES_USER=hydra
+HYDRA_POSTGRES_PASSWORD={{ secrets.hydra_postgres_password }}
+HYDRA_POSTGRES_DB_NAME=hydra
+DIODE_POSTGRES_DB_NAME=diode
+DIODE_POSTGRES_USER=diode
+DIODE_POSTGRES_PASSWORD={{ secrets.diode_postgres_password }}
+SUPERUSER_PASSWORD={{ secrets.superuser_password }}
+REDIS_PASSWORD={{ secrets.redis_password }}
+REDIS_CACHE_PASSWORD={{ secrets.redis_cache_password }}
+DIODE_INGEST_CLIENT_SECRET={{ secrets.diode_ingest_client_secret }}
+DIODE_REDIS_PASSWORD={{ secrets.diode_redis_password }}
+ORB_AGENT_CLIENT_ID={{ secrets.orb_agent_client_id | default('') }}
+ORB_AGENT_CLIENT_SECRET={{ secrets.orb_agent_client_secret | default('') }}
+SNMP_COMMUNITY={{ secrets.snmp_community | default('public') }}

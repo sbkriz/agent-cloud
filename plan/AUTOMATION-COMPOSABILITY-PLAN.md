@@ -1,8 +1,8 @@
 # Automation Composability Plan
 
 **Date:** 2026-04-02
-**Status:** PROPOSED
-**Context:** The NetBox deployment exposed that our deploy.sh scripts mix infrastructure concerns (credential management, OpenBao, SSH) with container operations (compose, migrations, health checks). This plan decomposes service deployments into reusable Ansible building blocks that Semaphore orchestrates.
+**Status:** ACCEPTED — Implementing with NetBox as first service
+**Context:** The NetBox deployment exposed that deploy.sh scripts mix infrastructure concerns (credential management, OpenBao) with container operations (compose, migrations). This plan decomposes service deployments into reusable Ansible building blocks that Semaphore orchestrates.
 
 ---
 
@@ -10,172 +10,239 @@
 
 Each service's deploy.sh is a monolith that handles everything from secret generation to container lifecycle to API bootstrapping. This creates:
 
-1. **Duplication** — Every deploy.sh reimplements OpenBao auth, secret generation, health waiting
-2. **Tight coupling** — deploy.sh can't run without OpenBao creds, but Ansible has them natively
-3. **Fragility** — A 17-step bash script has 17 failure points with limited error recovery
-4. **Inconsistency** — Each service handles secrets slightly differently
-5. **Testing difficulty** — Can't test individual steps in isolation
+1. **Secret drift** — deploy.sh generates new secrets on each run if intermediary files are missing, causing password mismatches with existing databases
+2. **Duplication** — Every deploy.sh reimplements OpenBao auth, secret generation, health waiting
+3. **Tight coupling** — deploy.sh needs OpenBao credentials but Ansible already has them natively
+4. **No validation** — Secrets are generated and used without verifying they work
+5. **Intermediary files** — secrets/ directory on VM is a redundant copy of what's in OpenBao
 
-## Solution: Composable Ansible Roles
+## Solution: OpenBao-Driven Secret Lifecycle
 
-Decompose service deployment into reusable Ansible task files (or roles) that any `deploy-<service>.yml` playbook can compose together.
+**OpenBao is the single source of truth.** No secrets/ directory on VMs. Ansible fetches from OpenBao, templates compose-ready config files directly, and deploy.sh only runs container operations.
 
-### Proposed Task Library
+### Architecture
+
+```
+OpenBao (source of truth)
+  ↑ generate + store (first deploy)
+  ↓ fetch (all deploys)
+Ansible (manage-secrets.yml)
+  ↓ template
+env/*.env, .env, config files (on VM, compose-ready)
+  ↓ read
+deploy.sh (container operations: compose up, migrations, health)
+```
+
+### Secret Lifecycle
+
+**First deploy (no secrets in OpenBao):**
+1. `manage-secrets.yml` checks OpenBao — empty
+2. Generates random secrets via Ansible `password` lookup
+3. Stores all secrets in OpenBao
+4. Templates env files on VM from generated values
+5. deploy.sh starts containers using the env files
+
+**Subsequent deploys (secrets exist in OpenBao):**
+1. `manage-secrets.yml` checks OpenBao — has values
+2. Reuses all existing secrets (no regeneration)
+3. Templates env files on VM from fetched values
+4. deploy.sh starts containers — passwords match existing database volumes
+
+**Secret validation (check-secrets.yml):**
+1. Reads secrets from OpenBao
+2. Tests each credential against its service (DB connect, API call, HTTP auth)
+3. Reports which secrets are valid, expired, or missing
+4. Does NOT modify anything — read-only verification
+
+---
+
+## Composable Task Library
 
 ```
 platform/playbooks/tasks/
-  clone-repo.yml           Clone/update the monorepo on target VM
-  seed-secrets.yml         Pull user-managed secrets from OpenBao → VM
-  run-deploy.yml           Execute service deploy.sh (container operations)
-  sync-secrets.yml         Push generated secrets from VM → OpenBao
+  clone-repo.yml           Clone/update monorepo on target VM
+  manage-secrets.yml       Fetch/generate secrets via OpenBao, template env files
+  run-deploy.yml           Execute deploy.sh (container operations only)
   verify-health.yml        Health check a service endpoint
-  install-docker.yml       Install Docker CE (idempotent)
-  install-podman.yml       Install Podman (idempotent)
+  install-docker.yml       Install Docker CE (standalone playbook)
 ```
 
 ### Task Responsibilities
 
-**`clone-repo.yml`** — Monorepo lifecycle on the target VM
-- Clone or update `~/agent-cloud` from HTTPS
-- Create convenience symlink `~/<service>` → deployment dir
-- No credentials needed (public repo)
+**`clone-repo.yml`**
+- Clone or update `~/agent-cloud` via HTTPS (public repo, no creds)
+- Create convenience symlink `~/<service>`
+- No credentials needed
 
-**`seed-secrets.yml`** — Pre-deploy: OpenBao → VM
-- Authenticate to OpenBao via AppRole (creds from Semaphore environment)
-- Fetch `secret/services/<service_name>` from OpenBao
-- Write specified secret keys to `secrets/<key>.txt` on the VM
-- Accepts a list of secret keys to seed (service-specific)
-- Skips missing keys gracefully (not all services have all secrets)
+**`manage-secrets.yml`**
+- Authenticate to OpenBao via AppRole
+- Fetch existing secrets from `secret/services/<service_name>`
+- Generate missing secrets (random or Django-style, per `_secret_definitions`)
+- Store all secrets (existing + generated) back to OpenBao
+- Template service-specific env files (`env/*.env`, `.env`, config files)
+- Accepts `_secret_definitions` list: `[{name, type, length}]`
+  - `type: random` — generated if missing (passwords, tokens)
+  - `type: django` — Django secret key format if missing
+  - `type: user` — user-managed, never auto-generated (SNMP, API keys)
+- Accepts `_env_templates` list of Jinja2 templates to render
 
-**`run-deploy.yml`** — Container operations
+**`run-deploy.yml`**
 - `cd` to deployment dir, run `bash deploy.sh`
-- Passes `CONTAINER_ENGINE`, `OPENBAO_ADDR`, service URL as env vars
-- deploy.sh handles: templates, secret generation, image pull/build, compose lifecycle, migrations, superuser, OAuth2, agent start
-- deploy.sh does NOT handle OpenBao — that's Ansible's job
+- Passes `CONTAINER_ENGINE` as env var
+- deploy.sh verifies env files exist (but does NOT generate secrets)
+- deploy.sh handles: upstream repos, image pull/build, compose lifecycle, migrations, superuser, OAuth2, agent start
 
-**`sync-secrets.yml`** — Post-deploy: VM → OpenBao
-- Read all `secrets/*.txt` from the VM
-- Build JSON, authenticate to OpenBao, PUT to `secret/services/<service_name>`
-- Includes service URL in the stored data
-- Reusable across all services (already exists as `sync-secrets-to-openbao.yml`)
-
-**`verify-health.yml`** — Post-deploy validation
+**`verify-health.yml`**
 - HTTP GET to `service_url + health_path`
 - Retries with backoff
 - Reports HEALTHY/UNHEALTHY
 
-### Composable Playbook Pattern
+### Validation Playbooks
 
-Every `deploy-<service>.yml` follows the same structure:
+**`check-secrets.yml`** — Read-only secret inventory
+- Lists all secrets in OpenBao for a service
+- Reports which are present, which are missing, which are empty
+- Does NOT generate or modify anything
+- Usage: pre-deploy check, audit, troubleshooting
+
+**`validate-secrets.yml`** — Active credential testing
+- Fetches secrets from OpenBao
+- Tests each against its service:
+  - DB passwords: `psql` connection test
+  - API tokens: HTTP request with auth header
+  - Redis passwords: `redis-cli ping` with auth
+- Reports: valid, invalid, unreachable
+- Does NOT modify anything — read-only verification
+- Usage: post-deploy verification, scheduled health checks
+
+---
+
+## Composable Playbook Pattern
+
+Every `deploy-<service>.yml` follows this structure:
 
 ```yaml
-# deploy-<service>.yml
-
-# Phase 1: Pre-deploy
-- name: "Pre-deploy"
+# Phase 1: Clone + Secrets
+- name: "Clone and manage secrets"
   hosts: <service>_svc
   tasks:
     - include_tasks: tasks/clone-repo.yml
-    - include_tasks: tasks/seed-secrets.yml
+    - include_tasks: tasks/manage-secrets.yml
       vars:
-        _user_secrets: [snmp_community, pfsense_api_key]  # service-specific
+        _secret_definitions: [...]   # service-specific
+        _env_templates: [...]        # service-specific
 
-# Phase 2: Deploy  
-- name: "Deploy"
+# Phase 2: Container Operations
+- name: "Deploy containers"
   hosts: <service>_svc
   tasks:
     - include_tasks: tasks/run-deploy.yml
 
-# Phase 3: Post-deploy
-- name: "Post-deploy"
+# Phase 3: Verify
+- name: "Verify deployment"
   hosts: <service>_svc
   tasks:
-    - include_tasks: tasks/sync-secrets.yml
     - include_tasks: tasks/verify-health.yml
 ```
 
-Services that need Docker add `install-docker.yml` before phase 1. Services that need `become` for specific steps set it per-task.
+Services that need Docker add `install-docker.yml` as a pre-phase. Services that need `become` for specific steps set it per-task.
 
-### What deploy.sh Keeps vs What Moves to Ansible
+---
+
+## What deploy.sh Keeps vs What Moves to Ansible
 
 | Concern | deploy.sh | Ansible |
 |---------|-----------|---------|
 | Clone upstream repos (e.g., netbox-docker) | Yes | No |
 | Copy .example templates | Yes | No |
-| Generate random secrets | Yes | No |
+| **Generate secrets** | **No** | **Yes (manage-secrets.yml)** |
+| **Write env files from secrets** | **No** | **Yes (Jinja2 templates)** |
+| **OpenBao read/write** | **No** | **Yes (native hashi_vault)** |
 | Pull/build container images | Yes | No |
 | Start/stop compose services | Yes | No |
 | Wait for container health | Yes | No |
 | Run DB migrations | Yes | No |
 | Create admin users | Yes | No |
 | Register OAuth2 clients | Yes | No |
-| Start privileged agents | Yes (sudo) | Could move here |
-| **OpenBao authentication** | **No** | **Yes** |
-| **Pull secrets from OpenBao** | **No** | **Yes (pre-deploy)** |
-| **Push secrets to OpenBao** | **No** | **Yes (post-deploy)** |
-| **Clone monorepo** | **No** | **Yes** |
-| **Health check verification** | **No** | **Yes** |
-| **Docker/Podman installation** | **No** | **Yes (separate playbook)** |
+| Start privileged agents | Yes (sudo) | No |
+| **Clone monorepo** | **No** | **Yes (clone-repo.yml)** |
+| **Health check verification** | **No** | **Yes (verify-health.yml)** |
+| **Docker/Podman installation** | **No** | **Yes (standalone playbook)** |
+| **Secret validation** | **No** | **Yes (validate-secrets.yml)** |
 
-### deploy.sh Simplification
-
-With Ansible handling credentials, deploy.sh becomes a pure container operations script:
+### deploy.sh Becomes Pure Container Operations
 
 ```bash
 #!/usr/bin/env bash
-# deploy.sh — Container operations only. Credentials managed by Ansible.
-set -euo pipefail
+# deploy.sh — Container operations only.
+# Secrets and env files managed by Ansible. Monorepo cloned by Ansible.
 
-# Expect: secrets/ directory already populated by Ansible pre-deploy
-# Expect: monorepo already cloned by Ansible
-# Produces: additional secrets in secrets/ (pushed to OpenBao by Ansible post-deploy)
-
-source lib/common.sh
+# Verify env files exist (Ansible must run first)
+[ -f ".env" ] || error ".env missing. Deploy via Semaphore."
+[ -f "env/netbox.env" ] || error "env/netbox.env missing."
 
 step 1: clone upstream dependency repos
-step 2: copy .example templates (if missing)
-step 3: generate secrets (reads existing from secrets/, generates missing)
+step 2: copy .example templates (non-secret config only)
+step 3: verify env files present (fail if missing)
 step 4: pull images
 step 5: build custom images
 step 6: stop stack
 step 7: sync DB passwords (existing volumes)
 step 8: start stack (staged)
-step 9: wait for health
-step 10: run migrations
-step 11: create superuser
-step 12+: service-specific operations (OAuth2, agent start, etc.)
+step 9+: wait, migrate, create superuser, OAuth2, agent
 ```
 
-No OpenBao code. No monorepo cloning. No credential management. Pure container lifecycle.
+No `generate-secrets.sh` call. No OpenBao code. No `BAO_ROLE_ID`. Pure container lifecycle.
 
-### Migration Path
+---
 
-1. **Immediate (current session):** NetBox already uses the 3-phase pattern (deploy-netbox.yml)
-2. **Next:** Extract `seed-secrets.yml` and `sync-secrets.yml` as reusable task files from deploy-netbox.yml
-3. **Then:** Apply the same pattern to NocoDB and n8n deploy playbooks
-4. **Future:** Refactor all deploy.sh scripts to remove OpenBao code, rely on Ansible pre/post-deploy
+## Env File Templates (Jinja2)
 
-### Validation Criteria
+Each service provides Jinja2 templates that `manage-secrets.yml` renders:
+
+```
+platform/services/netbox/deployment/
+  templates/
+    netbox.env.j2
+    postgres.env.j2
+    discovery.env.j2
+    dot-env.j2
+    hydra.yaml.j2
+```
+
+These replace `generate-secrets.sh`'s env file writing logic. Variables come from the `_resolved_secrets` dict populated by `manage-secrets.yml`.
+
+---
+
+## Migration Path
+
+1. **NetBox (current):** First service to implement full composable pattern
+2. **Extract reusable tasks:** `clone-repo.yml`, `manage-secrets.yml`, `run-deploy.yml`, `verify-health.yml` from deploy-netbox.yml
+3. **NocoDB + n8n:** Apply same pattern — define `_secret_definitions`, create env templates, simplify deploy.sh
+4. **OpenBao:** Special case — bootstraps itself, but Ansible still manages post-deploy secret sync
+5. **All future services:** Follow the composable pattern from day one
+
+---
+
+## Validation Criteria
 
 | Check | Pass Condition |
 |-------|---------------|
-| Task files are reusable | Same `seed-secrets.yml` works for netbox, nocodb, n8n |
-| deploy.sh works without OpenBao | `deploy.sh` completes when `OPENBAO_ADDR` is not set |
-| Ansible handles all credential lifecycle | Pre-deploy seeds, post-deploy syncs, no gaps |
-| Idempotent end-to-end | Running `deploy-<service>.yml` twice = same state |
-| No credentials in deploy.sh | `grep -r 'BAO_ROLE_ID\|BAO_SECRET_ID' deploy.sh` returns nothing |
+| No secrets/ directory on VM | deploy.sh reads from env files only |
+| No generate-secrets.sh call | deploy.sh verifies, doesn't generate |
+| OpenBao is authoritative | Redeploying reuses existing secrets |
+| First deploy works | Empty OpenBao → generate → store → deploy |
+| Subsequent deploy works | Existing OpenBao → fetch → template → deploy |
+| check-secrets reports accurately | Lists all secrets, flags missing |
+| validate-secrets tests credentials | DB/API/Redis auth verified |
+| Task reuse works | Same manage-secrets.yml for netbox, nocodb, n8n |
+| Idempotent end-to-end | Running deploy twice = same state |
 
-### Security Considerations
+## Security Considerations
 
-- **Separation of concerns:** deploy.sh never authenticates to OpenBao — reduces attack surface if a deploy script is compromised
-- **Ansible has AppRole natively** via `community.hashi_vault` — no need to shell out to curl
-- **Secrets on VM are ephemeral:** generated by deploy.sh, synced to OpenBao by Ansible, VM copy is the working set (not source of truth)
-- **User-managed secrets** (SNMP community, API keys) flow: user → site-config → OpenBao → Ansible pre-deploy → VM secrets/
-- **Generated secrets** flow: deploy.sh → VM secrets/ → Ansible post-deploy → OpenBao
-
-### Architectural Considerations
-
-- This pattern scales to any service — NocoDB, n8n, Semaphore, NemoClaw can all use it
-- The task library grows incrementally — extract from working playbooks, not designed upfront
-- Semaphore orchestrates the playbook; the playbook composes the tasks; the tasks call deploy.sh
-- Three layers of idempotency: Semaphore (re-run templates), Ansible (declarative tasks), deploy.sh (check-before-act)
+- **No intermediary files:** Secrets go OpenBao → Ansible memory → env files. No `secrets/*.txt` on disk.
+- **Env files are gitignored:** `.env` and `env/*.env` written by Ansible, never committed
+- **Ansible `no_log: true`** on all secret-handling tasks
+- **AppRole least privilege:** Semaphore's AppRole can read/write all service paths (orchestrator role)
+- **Validation catches drift:** `validate-secrets.yml` detects when a password in OpenBao no longer matches the database
+- **deploy.sh has no credential access:** Cannot authenticate to OpenBao, cannot generate secrets — reduces blast radius if compromised

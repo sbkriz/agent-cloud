@@ -14,8 +14,7 @@
 # This script handles both first-time deployment and updates (all steps are idempotent):
 #   1.  Updates/clones the netbox-docker upstream repository
 #   2.  Copies .example templates to live files (if missing)
-#   3.  Generates/syncs secrets (via lib/generate-secrets.sh)
-#  3b.  Stores secrets in OpenBao (if OPENBAO_ADDR is set)
+#   3.  Verifies secrets exist (Ansible manages generation + OpenBao sync)
 #   4.  Pulls latest upstream images (unless --no-pull)
 #   5.  Builds the custom NetBox image with plugins
 #   6.  Stops the stack gracefully
@@ -87,20 +86,20 @@ fi
 info "Step 2/16: Ensuring templates..."
 copy_example_templates
 
-# ─── Step 3: Generate secrets ───────────────────────────────────────
-info "Step 3/17: Generating secrets..."
-chmod +x lib/generate-secrets.sh discovery/init-db.sh
-./lib/generate-secrets.sh "${NETBOX_URL}"
-
-# ─── Step 3b: OpenBao secret management ─────────────────────────────
-# OpenBao integration is handled by Ansible (deploy-netbox.yml):
-#   Pre-deploy:  Pulls user-managed secrets (snmp_community, pfsense_api_key,
-#                orb_agent creds) from OpenBao → secrets/ on VM
-#   Post-deploy: Pushes all generated secrets from secrets/ → OpenBao
+# ─── Step 3: Verify env files ───────────────────────────────────────
+# Secrets and env files are managed by Ansible (deploy-netbox.yml):
+#   Ansible fetches/generates secrets via OpenBao → templates env files directly.
+#   No secrets/ directory. No generate-secrets.sh.
 #
-# deploy.sh focuses on container operations only. If running manually for
-# debugging, pass user-managed secrets via secrets/ files before running.
-info "Step 3b: OpenBao managed by Ansible (pre/post-deploy)"
+# deploy.sh verifies env files exist but does NOT generate or manage them.
+info "Step 3: Verifying env files..."
+chmod +x discovery/init-db.sh
+REQUIRED_FILES=".env env/netbox.env env/postgres.env env/discovery.env discovery/hydra.yaml"
+for f in $REQUIRED_FILES; do
+  [ -f "$f" ] && [ -s "$f" ] || \
+    error "${f} missing or empty. Deploy via Semaphore (Ansible templates env files from OpenBao)."
+done
+info "  All required env files present."
 
 # ─── Step 4: Pull latest images ────────────────────────────────────
 if [ "$SKIP_PULL" = false ]; then

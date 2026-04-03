@@ -1,0 +1,30 @@
+# Rendered by Ansible from OpenBao secrets — do not edit manually.
+
+urls:
+  self:
+    issuer: http://hydra:4444
+
+serve:
+  public:
+    host: 0.0.0.0
+    port: 4444
+  admin:
+    host: 0.0.0.0
+    port: 4445
+
+secrets:
+  system:
+    - {{ secrets.hydra_system_secret }}
+
+strategies:
+  access_token: jwt
+  jwt:
+    scope_claim: both
+
+oauth2:
+  client_credentials:
+    default_grant_allowed_scope: true
+
+log:
+  level: info
+  format: json

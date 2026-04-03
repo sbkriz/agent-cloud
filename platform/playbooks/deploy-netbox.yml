@@ -1,33 +1,54 @@
 ---
-# deploy-netbox.yml — Full NetBox deployment orchestrated by Ansible
+# deploy-netbox.yml — Full NetBox deployment per automation-composability-plan
 #
-# Phases:
-#   1. Pre-deploy: Pull user-managed secrets from OpenBao → VM secrets/
-#   2. Deploy: Clone monorepo, run deploy.sh (container operations only)
-#   3. Post-deploy: Push all generated secrets from VM → OpenBao
+# Phase 1: Clone repo, manage secrets via OpenBao, template env files
+# Phase 2: Run deploy.sh (container operations only)
+# Phase 3: Verify deployment health
 #
-# Prerequisites:
-#   - Docker installed (run install-docker.yml first if needed)
-#   - OpenBao unsealed with AppRole credentials in Semaphore environment
+# OpenBao is the source of truth. No secrets/ directory. No generate-secrets.sh.
+# Ansible templates compose-ready env files directly from OpenBao data.
 
-# ── Phase 1: Clone monorepo + pull user-managed secrets from OpenBao ─
-- name: "Pre-deploy: Clone and seed secrets"
+# ── Phase 1: Clone + Secrets + Env Files ─────────────────────────────
+- name: "Phase 1: Clone repo and configure secrets"
   hosts: netbox_svc
   gather_facts: false
   become: false
   vars:
     _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
-    _secrets_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/secrets"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _branch: "{{ service_branch | default('main') }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    _user_secrets:
-      - snmp_community
-      - pfsense_api_key
-      - orb_agent_client_id
-      - orb_agent_client_secret
-      - device_discovery_password
+    _service_url: "{{ service_url | default('http://localhost:8000') }}"
+    _secret_definitions:
+      # Core NetBox
+      - { name: postgres_password, type: random, length: 32 }
+      - { name: redis_password, type: random, length: 32 }
+      - { name: redis_cache_password, type: random, length: 32 }
+      - { name: secret_key, type: django, length: 50 }
+      - { name: api_token_peppers, type: django, length: 50 }
+      - { name: superuser_password, type: random, length: 24 }
+      # Discovery / Diode
+      - { name: diode_redis_password, type: random, length: 32 }
+      - { name: diode_postgres_password, type: random, length: 32 }
+      - { name: hydra_postgres_password, type: random, length: 32 }
+      - { name: hydra_system_secret, type: random, length: 32 }
+      - { name: diode_to_netbox_client_secret, type: random, length: 32 }
+      - { name: netbox_to_diode_client_secret, type: random, length: 32 }
+      - { name: diode_ingest_client_secret, type: random, length: 32 }
+      # User-managed (never auto-generated)
+      - { name: snmp_community, type: user }
+      - { name: pfsense_api_key, type: user }
+      - { name: orb_agent_client_id, type: user }
+      - { name: orb_agent_client_secret, type: user }
+      - { name: device_discovery_password, type: user }
+    _env_templates:
+      - { src: postgres.env.j2, dest: env/postgres.env }
+      - { src: netbox.env.j2, dest: env/netbox.env }
+      - { src: discovery.env.j2, dest: env/discovery.env }
+      - { src: dot-env.j2, dest: .env }
+      - { src: hydra.yaml.j2, dest: discovery/hydra.yaml }
 
   tasks:
     - name: "Install git if needed"
@@ -43,76 +64,33 @@
         version: "{{ _branch }}"
         force: true
 
-    - name: "Authenticate to OpenBao"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/auth/approle/login"
-        method: POST
-        body_format: json
-        body:
-          role_id: "{{ _bao_role_id }}"
-          secret_id: "{{ _bao_secret_id }}"
-        status_code: [200]
-      register: _bao_auth
-      no_log: true
-
-    - name: "Fetch NetBox secrets from OpenBao"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
-        method: GET
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        status_code: [200]
-      register: _bao_secrets
-      no_log: true
-
-    - name: "Ensure secrets directory exists"
-      ansible.builtin.file:
-        path: "{{ _secrets_dir }}"
-        state: directory
-        mode: "0700"
-
-    - name: "Write user-managed secrets to VM"
-      ansible.builtin.copy:
-        content: "{{ _bao_secrets.json.data.data[item] }}"
-        dest: "{{ _secrets_dir }}/{{ item }}.txt"
-        mode: "0600"
-      loop: "{{ _user_secrets }}"
-      when: _bao_secrets.json.data.data[item] is defined and _bao_secrets.json.data.data[item] | length > 0
-      no_log: true
-
     - name: "Create convenience symlink"
       ansible.builtin.file:
-        src: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+        src: "{{ _deploy_dir }}"
         dest: "/home/{{ ansible_user }}/{{ service_name }}"
         state: link
         force: true
       ignore_errors: true
 
-    - name: "Report"
-      ansible.builtin.debug:
-        msg: "Pre-deploy complete: repo cloned, user secrets seeded"
+    - name: "Manage secrets and template env files"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
-# ── Phase 2: Run deploy.sh (container operations only) ───────────────
-- name: "Deploy NetBox containers"
+# ── Phase 2: Container Operations ────────────────────────────────────
+- name: "Phase 2: Deploy NetBox containers"
   hosts: netbox_svc
   gather_facts: false
   become: false
   vars:
     _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
   tasks:
     - name: "Run deploy.sh"
       ansible.builtin.shell: |
-        cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+        cd "{{ _deploy_dir }}"
         bash deploy.sh {{ service_url | default('http://localhost:8000') }}
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('') }}"
-        OPENBAO_ADDR: "{{ _bao_url }}"
-        BAO_ROLE_ID: "{{ _bao_role_id | default('') }}"
-        BAO_SECRET_ID: "{{ _bao_secret_id | default('') }}"
       register: _deploy
       changed_when: true
 
@@ -120,8 +98,21 @@
       ansible.builtin.debug:
         var: _deploy.stdout_lines
 
-# ── Phase 3: Push all secrets to OpenBao ─────────────────────────────
-- name: "Post-deploy: Sync NetBox secrets to OpenBao"
-  import_playbook: sync-secrets-to-openbao.yml
-  vars:
-    target_service: netbox_svc
+# ── Phase 3: Verify ──────────────────────────────────────────────────
+- name: "Phase 3: Verify deployment"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Health check"
+      ansible.builtin.uri:
+        url: "{{ service_url }}{{ health_path | default('/login/') }}"
+        status_code: [200]
+        validate_certs: false
+      retries: 10
+      delay: 15
+      when: service_url is defined
+
+    - name: "NetBox deployed"
+      ansible.builtin.debug:
+        msg: "NetBox is healthy at {{ service_url | default('N/A') }}"
