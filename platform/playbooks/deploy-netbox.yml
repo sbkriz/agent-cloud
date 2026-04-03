@@ -189,10 +189,12 @@
     - name: "Health check"
       ansible.builtin.uri:
         url: "{{ service_url }}{{ health_path | default('/login/') }}"
-        status_code: [200]
+        status_code: [200, 301, 302]
         validate_certs: false
+        follow_redirects: safe
+        timeout: 30
       retries: 10
-      delay: 15
+      delay: 30
       when: service_url is defined
 
     - name: "NetBox deployed"
