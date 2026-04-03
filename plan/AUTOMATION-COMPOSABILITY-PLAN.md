@@ -60,11 +60,22 @@ deploy.sh (container operations: compose up, migrations, health)
 
 ```
 platform/playbooks/tasks/
-  clone-repo.yml           Clone/update monorepo on target VM
-  manage-secrets.yml       Fetch/generate secrets via OpenBao, template env files
-  run-deploy.yml           Execute deploy.sh (container operations only)
-  verify-health.yml        Health check a service endpoint
-  install-docker.yml       Install Docker CE (standalone playbook)
+  manage-secrets.yml       Fetch/generate secrets via OpenBao, template env files  [IMPLEMENTED]
+  clone-and-deploy.yml     Clone monorepo, run deploy.sh, health check             [IMPLEMENTED]
+  clean-service.yml        Destroy containers, volumes, clone (full wipe)           [IMPLEMENTED]
+  clone-repo.yml           Clone/update monorepo on target VM                      [PLANNED]
+  run-deploy.yml           Execute deploy.sh (container operations only)            [PLANNED]
+  verify-health.yml        Health check a service endpoint                          [PLANNED]
+
+platform/playbooks/
+  deploy-<service>.yml     Composable: clone + secrets + deploy + verify            [NETBOX DONE]
+  clean-deploy-<service>.yml  Wipe + fresh deploy                                  [NETBOX DONE]
+  check-secrets.yml        Read-only secret inventory from OpenBao                  [IMPLEMENTED]
+  validate-secrets.yml     Active credential testing (DB, Redis, HTTP)              [IMPLEMENTED]
+  distribute-ssh-keys.yml  Deploy SSH keys from OpenBao                             [IMPLEMENTED]
+  harden-ssh.yml           NOPASSWD sudo + sshd lockdown                            [IMPLEMENTED]
+  install-docker.yml       Install Docker CE (standalone)                            [IMPLEMENTED]
+  sync-secrets-to-openbao.yml  Push VM secrets → OpenBao (recovery/migration)       [IMPLEMENTED]
 ```
 
 ### Task Responsibilities
@@ -96,6 +107,14 @@ platform/playbooks/tasks/
 - HTTP GET to `service_url + health_path`
 - Retries with backoff
 - Reports HEALTHY/UNHEALTHY
+
+**`clean-service.yml`**
+- Finds and stops compose stack (detects docker-compose.yml or compose.yml)
+- Destroys all volumes (`compose down -v`)
+- Removes any leftover containers with service name prefix
+- Removes the agent-cloud clone and convenience symlink
+- Requires `become: true` for killing stale port processes
+- Used by `clean-deploy-<service>.yml` before a fresh deploy
 
 ### Validation Playbooks
 

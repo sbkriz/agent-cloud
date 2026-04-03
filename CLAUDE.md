@@ -94,7 +94,29 @@ Tier 3: SECRETS (OpenBao, never on disk in steady state)
 
 Resolution order: Tier 3 > Tier 2 > Tier 1 (secrets override everything).
 
-### Credential Flow
+### Credential Flow (Composable Pattern)
+
+All new service deployments follow the composable pattern defined in `plan/AUTOMATION-COMPOSABILITY-PLAN.md`:
+
+```
+OpenBao (source of truth)
+  ↑ generate + store (first deploy)
+  ↓ fetch (subsequent deploys)
+Ansible manage-secrets.yml
+  ↓ Jinja2 template
+env/*.env, .env, config files (on VM, compose-ready)
+  ↓ read
+deploy.sh (container operations only)
+```
+
+deploy.sh does NOT generate secrets or interact with OpenBao.
+Ansible handles the full credential lifecycle:
+- `manage-secrets.yml` — fetch/generate/store/template
+- `check-secrets.yml` — read-only inventory of secrets in OpenBao
+- `validate-secrets.yml` — active credential testing (DB, Redis, HTTP)
+- `clean-service.yml` — destroy containers, volumes, clone for full rebuild
+
+Legacy credential flow (older services not yet migrated):
 
 ```
 Semaphore environment (AppRole role-id + secret-id only)
@@ -259,12 +281,17 @@ See `plan/IMPLEMENTATION_PLAN.md` and `plan/UNIFICATION-PLAN.md` for detailed ro
 
 ## Adding a New Service
 
-1. Create `platform/services/<name>/deployment/deploy.sh` (source `../../../lib/common.sh`)
-2. Add host to site-config inventory under `agent_cloud` with `service_name` and `monorepo_deploy_path`
-3. Create `deploy-<name>.yml` and `update-<name>.yml` wrapper playbooks
-4. Create Semaphore task templates pointing at the wrappers
-5. Generate SSH key pair, store in OpenBao at `secret/services/ssh/<name>`
-6. Run `distribute-ssh-keys.yml` to deploy the key to the VM
+Follow the composable pattern from `plan/AUTOMATION-COMPOSABILITY-PLAN.md`:
+
+1. Create `platform/services/<name>/deployment/deploy.sh` — container operations only (no secret generation)
+2. Create `platform/services/<name>/deployment/templates/*.j2` — Jinja2 templates for env files
+3. Add host to site-config inventory under `agent_cloud` with `service_name`, `monorepo_deploy_path`, `service_url`
+4. Create `deploy-<name>.yml` using composable tasks: `manage-secrets.yml` → deploy.sh → health check
+5. Define `_secret_definitions` (what secrets the service needs) and `_env_templates` (what files to render)
+6. Create `clean-deploy-<name>.yml` using `tasks/clean-service.yml` + `deploy-<name>.yml`
+7. Create Semaphore task templates pointing at the playbooks
+8. Generate SSH key pair, store in OpenBao at `secret/services/ssh/<name>`
+9. Run `distribute-ssh-keys.yml` to deploy the key to the VM
 
 ## Dependencies
 

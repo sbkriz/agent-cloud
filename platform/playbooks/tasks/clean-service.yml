@@ -1,0 +1,47 @@
+---
+# clean-service.yml — Destroy a service's containers, volumes, and clone
+#
+# WARNING: Destroys ALL data for the service (database, volumes, containers).
+#
+# Expected variables:
+#   service_name, monorepo_deploy_path, _monorepo_dir
+#   container_engine (optional, defaults to docker)
+
+- name: "Stop and remove {{ service_name }} containers + volumes"
+  ansible.builtin.shell: |
+    DEPLOY_DIR="{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    ENGINE="{{ container_engine | default('docker') }}"
+    COMPOSE_FILE=""
+    for f in docker-compose.yml compose.yml; do
+      [ -f "${DEPLOY_DIR}/${f}" ] && COMPOSE_FILE="${f}" && break
+    done
+    if [ -n "$COMPOSE_FILE" ]; then
+      cd "$DEPLOY_DIR"
+      $ENGINE compose --project-name {{ service_name }} -f "$COMPOSE_FILE" down -v 2>&1 || true
+    fi
+    # Remove any containers with the service name prefix
+    $ENGINE ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | grep "^{{ service_name }}" | xargs -r $ENGINE rm -f 2>/dev/null || true
+  become: true
+  register: _clean
+  changed_when: true
+
+- name: "Remove agent-cloud clone"
+  ansible.builtin.file:
+    path: "{{ _monorepo_dir }}"
+    state: absent
+
+- name: "Remove convenience symlink"
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/{{ service_name }}"
+    state: absent
+
+- name: "Verify clean"
+  ansible.builtin.shell: |
+    {{ container_engine | default('docker') }} volume ls 2>/dev/null | grep {{ service_name }} || echo "No {{ service_name }} volumes"
+    {{ container_engine | default('docker') }} ps -a 2>/dev/null | grep {{ service_name }} || echo "No {{ service_name }} containers"
+  register: _verify
+  changed_when: false
+
+- name: "Clean state"
+  ansible.builtin.debug:
+    var: _verify.stdout_lines
