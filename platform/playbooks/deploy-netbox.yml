@@ -87,7 +87,7 @@
           ansible.builtin.copy:
             content: "{{ _resolved.netbox_to_diode_client_secret }}"
             dest: "{{ _deploy_dir }}/secrets/netbox_to_diode_client_secret.txt"
-            mode: "0600"
+            mode: "0644"
           no_log: true
       vars:
         _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
@@ -115,7 +115,7 @@
       ansible.builtin.debug:
         var: _deploy.stdout_lines
 
-# ── Phase 3: Application config (post-deploy.sh — migrations, OAuth2, agent) ─
+# ── Phase 3: Application config (migrations, superuser, OAuth2) ──────
 - name: "Phase 3: Configure NetBox application"
   hosts: netbox_svc
   gather_facts: false
@@ -125,7 +125,7 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
   tasks:
-    - name: "Run post-deploy.sh (migrations, superuser, OAuth2, Orb Agent)"
+    - name: "Run post-deploy.sh (migrations, superuser, OAuth2)"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
         bash post-deploy.sh {{ service_url | default('http://localhost:8000') }}
@@ -140,81 +140,44 @@
 
     - name: "Verify Diode plugin can read the bind-mount secret"
       ansible.builtin.shell: |
-        {{ container_engine | default('docker') }} exec netbox{{ (container_engine | default('docker') == 'podman') | ternary('_', '-') }}netbox{{ (container_engine | default('docker') == 'podman') | ternary('_', '-') }}1 cat /run/secrets/netbox_to_diode 2>&1 | head -1
+        {{ container_engine | default('docker') }} exec netbox{{ _sep }}netbox{{ _sep }}1 \
+          cat /run/secrets/netbox_to_diode 2>&1 | wc -c
+      vars:
+        _sep: "{{ (container_engine | default('docker') == 'podman') | ternary('_', '-') }}"
       register: _diode_secret_check
       changed_when: false
-      no_log: true
-      failed_when: _diode_secret_check.stdout | length < 10
+      failed_when: (_diode_secret_check.stdout | int) < 10
 
     - name: "Bind-mount secret verified"
       ansible.builtin.debug:
-        msg: "Diode plugin secret mounted at /run/secrets/netbox_to_diode ({{ _diode_secret_check.stdout | length }} chars)"
+        msg: "Diode plugin secret mounted at /run/secrets/netbox_to_diode ({{ _diode_secret_check.stdout | trim }} bytes)"
 
-    # NOTE: Do NOT delete secrets/netbox_to_diode_client_secret.txt
-    # Docker bind-mounts are live — if the file is deleted, container
-    # restarts (e.g., step 15 discovery restart) will see an empty mount.
-    # The file must persist as long as the container is running.
-    # This is the one exception to "no secrets/ dir on VM" — Docker
-    # Compose bind-mounts require the source file to exist on the host.
-
-# ── Phase 4: Sync post-deploy credentials to OpenBao ─────────────────
-# post-deploy.sh may create new orb-agent credentials and write them to .env.
-# Read them from .env and patch OpenBao so they're tracked.
-- name: "Phase 4: Sync new credentials to OpenBao"
+# ── Phase 4: Manage Diode orb-agent credentials ─────────────────────
+- name: "Phase 4: Create/verify Diode credentials"
   hosts: netbox_svc
   gather_facts: false
   become: false
   vars:
     _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
-    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 
   tasks:
-    - name: "Read orb-agent credentials from .env"
-      ansible.builtin.shell: |
-        grep '^ORB_AGENT_CLIENT_ID=' "{{ _deploy_dir }}/.env" | cut -d= -f2-
-        grep '^ORB_AGENT_CLIENT_SECRET=' "{{ _deploy_dir }}/.env" | cut -d= -f2-
-      register: _orb_creds
-      changed_when: false
-      no_log: true
+    - name: "Manage Diode orb-agent credentials"
+      ansible.builtin.include_tasks: tasks/manage-diode-credentials.yml
 
-    - name: "Patch OpenBao with orb-agent credentials"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/auth/approle/login"
-        method: POST
-        body_format: json
-        body:
-          role_id: "{{ _bao_role_id }}"
-          secret_id: "{{ _bao_secret_id }}"
-        status_code: [200]
-      register: _bao_auth
-      delegate_to: localhost
-      no_log: true
-      when: _orb_creds.stdout_lines | length >= 2
+# ── Phase 5: Deploy Orb Agent ────────────────────────────────────────
+- name: "Phase 5: Deploy Orb Agent"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
 
-    - name: "Store credentials"
-      ansible.builtin.uri:
-        url: "{{ _bao_url }}/v1/secret/data/services/{{ service_name }}"
-        method: PATCH
-        headers:
-          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-          Content-Type: "application/merge-patch+json"
-        body_format: json
-        body:
-          data:
-            orb_agent_client_id: "{{ _orb_creds.stdout_lines[0] }}"
-            orb_agent_client_secret: "{{ _orb_creds.stdout_lines[1] }}"
-        status_code: [200]
-      delegate_to: localhost
-      no_log: true
-      when: _orb_creds.stdout_lines | length >= 2 and _orb_creds.stdout_lines[0] | length > 0
-
-    - name: "Report"
-      ansible.builtin.debug:
-        msg: "Orb-agent credentials synced to OpenBao"
-      when: _orb_creds.stdout_lines | length >= 2
+  tasks:
+    - name: "Deploy Orb Agent"
+      ansible.builtin.include_tasks: tasks/deploy-orb-agent.yml
 
 # ── Phase 5: Verify ──────────────────────────────────────────────────
 - name: "Phase 5: Verify deployment"

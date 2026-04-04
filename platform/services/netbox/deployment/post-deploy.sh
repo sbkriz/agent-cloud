@@ -7,9 +7,11 @@
 #  11.  Runs database migrations
 #  12.  Creates the admin superuser (skips if exists)
 #  13.  Waits for diode-auth + registers OAuth2 clients
-#  14.  Creates orb-agent credential via Diode plugin API (or reuses existing)
-#  15.  Restarts discovery services with registered credentials
-#  16.  Starts the Orb Agent (if configured) + verifies all services
+#       Restarts discovery services
+#
+# Steps 14-16 (Diode orb-agent credentials + Orb Agent) are handled by Ansible:
+#   tasks/manage-diode-credentials.yml — creates/verifies creds, stores in OpenBao
+#   tasks/deploy-orb-agent.yml — starts privileged container with creds from .env
 #
 # Usage:
 #   ./post-deploy.sh [NETBOX_URL]
@@ -67,33 +69,13 @@ info "Step 13: Registering OAuth2 clients..."
 wait_for_running "diode-auth" 120
 register_oauth2_clients
 
-# ─── Step 14: Ensure orb-agent credentials ─────────────────────────
-info "Step 14: Ensuring orb-agent credentials..."
-ensure_agent_credentials
+# Steps 14-16 (Diode credentials, discovery restart, Orb Agent) are handled
+# by Ansible: tasks/manage-diode-credentials.yml + tasks/deploy-orb-agent.yml
+info "Steps 14-16: Managed by Ansible (Diode creds + Orb Agent)"
 
-# ─── Step 15: Restart discovery services ───────────────────────────
-info "Step 15: Restarting discovery services..."
+# ─── Restart discovery services with registered OAuth2 clients ─────
+info "Restarting discovery services..."
 restart_discovery_services
-
-# ─── Step 16: Start Orb Agent + verify all services ────────────────
-if [ -f "discovery/agent.yaml" ]; then
-  info "Step 16: Starting Orb Agent..."
-  start_orb_agent
-  wait_for_agent_running 60
-else
-  info "Step 16: Skipping Orb Agent (discovery/agent.yaml not found)"
-fi
-
-# ─── Optional: pfSense REST API sync ──────────────────────────────
-PFSENSE_KEY="$(get_val "${DOT_ENV}" PFSENSE_API_KEY 2>/dev/null || echo "")"
-if [ -f "lib/pfsense-sync.py" ] && [ -n "$PFSENSE_KEY" ]; then
-  if command -v uv >/dev/null 2>&1; then
-    info "Running pfSense REST API sync..."
-    uv run --project "${SCRIPT_DIR}" lib/pfsense-sync.py 2>&1 || warn "pfSense sync failed (non-fatal)."
-  else
-    warn "Skipping pfSense sync (uv not found)"
-  fi
-fi
 
 # ─── Post-deployment verification ──────────────────────────────────
 info "Verifying service health..."

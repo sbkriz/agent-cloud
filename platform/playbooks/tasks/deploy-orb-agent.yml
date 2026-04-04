@@ -1,0 +1,99 @@
+---
+# deploy-orb-agent.yml — Start the NetBox Orb Agent for network/SNMP discovery
+#
+# The orb-agent runs as a standalone privileged container (not compose-managed)
+# with host networking for raw socket access (SYN scans, ICMP).
+#
+# Reads credentials from .env (written by manage-diode-credentials.yml).
+# Resolves agent.yaml template with credentials before mounting.
+#
+# Expected variables:
+#   service_name, monorepo_deploy_path, _monorepo_dir
+#   container_engine (docker or podman)
+
+- name: "Check agent.yaml exists"
+  ansible.builtin.stat:
+    path: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/discovery/agent.yaml"
+  register: _agent_yaml
+
+- name: "Skip orb-agent (no agent.yaml)"
+  ansible.builtin.debug:
+    msg: "Skipping orb-agent — discovery/agent.yaml not found. Copy from agent.yaml.example and customize."
+  when: not _agent_yaml.stat.exists
+
+- name: "Deploy orb-agent"
+  when: _agent_yaml.stat.exists
+  block:
+    - name: "Read orb-agent credentials from .env"
+      ansible.builtin.shell: |
+        grep '^ORB_AGENT_CLIENT_ID=' "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/.env" | cut -d= -f2-
+      register: _orb_id
+      changed_when: false
+      no_log: true
+
+    - name: "Read orb-agent secret from .env"
+      ansible.builtin.shell: |
+        grep '^ORB_AGENT_CLIENT_SECRET=' "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/.env" | cut -d= -f2-
+      register: _orb_secret
+      changed_when: false
+      no_log: true
+
+    - name: "Read SNMP community from .env"
+      ansible.builtin.shell: |
+        grep '^SNMP_COMMUNITY=' "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/.env" | cut -d= -f2-
+      register: _snmp
+      changed_when: false
+
+    - name: "Verify credentials available"
+      ansible.builtin.assert:
+        that:
+          - _orb_id.stdout | length > 0
+          - _orb_secret.stdout | length > 0
+        fail_msg: "orb-agent credentials missing from .env. Run manage-diode-credentials first."
+
+    - name: "Resolve agent.yaml with credentials"
+      ansible.builtin.shell: |
+        cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+        # Remove stale resolved config (Docker may create as directory)
+        [ -d "discovery/agent-resolved.yaml" ] && rm -rf "discovery/agent-resolved.yaml"
+        sed \
+          -e "s|\${DIODE_CLIENT_ID}|{{ _orb_id.stdout }}|g" \
+          -e "s|\${DIODE_CLIENT_SECRET}|{{ _orb_secret.stdout }}|g" \
+          -e "s|\${SNMP_COMMUNITY}|{{ _snmp.stdout | default('public') }}|g" \
+          discovery/agent.yaml > discovery/agent-resolved.yaml
+        chmod 600 discovery/agent-resolved.yaml
+      no_log: true
+
+    - name: "Stop existing orb-agent"
+      ansible.builtin.shell: |
+        {{ container_engine | default('docker') }} stop netbox-orb-agent 2>/dev/null || true
+        {{ container_engine | default('docker') }} rm netbox-orb-agent 2>/dev/null || true
+      become: true
+      changed_when: false
+
+    - name: "Start orb-agent (privileged, host networking)"
+      ansible.builtin.shell: |
+        cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+        sudo {{ container_engine | default('docker') }} run -d \
+          --name netbox-orb-agent \
+          --privileged \
+          --net=host \
+          -v "$(pwd)/discovery/agent-resolved.yaml:/opt/orb/agent.yaml:ro" \
+          -v "$(pwd)/discovery/snmp-extensions:/opt/orb/snmp-extensions:ro" \
+          netboxlabs/orb-agent:latest
+      become: true
+      register: _orb_start
+
+    - name: "Wait for orb-agent to be running"
+      ansible.builtin.shell: |
+        {{ container_engine | default('docker') }} inspect netbox-orb-agent --format '{{ '{{' }}.State.Running{{ '}}' }}'
+      become: true
+      register: _orb_running
+      retries: 6
+      delay: 10
+      until: _orb_running.stdout == 'true'
+      changed_when: false
+
+    - name: "Orb Agent deployed"
+      ansible.builtin.debug:
+        msg: "orb-agent running with credential {{ _orb_id.stdout }}"
