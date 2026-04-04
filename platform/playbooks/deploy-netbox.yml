@@ -49,6 +49,7 @@
       - { src: discovery.env.j2, dest: env/discovery.env }
       - { src: dot-env.j2, dest: .env }
       - { src: hydra.yaml.j2, dest: discovery/hydra.yaml, mode: "0644" }
+      - { src: agent.yaml.j2, dest: discovery/agent.yaml, mode: "0644" }
 
   tasks:
     - name: "Install git if needed"

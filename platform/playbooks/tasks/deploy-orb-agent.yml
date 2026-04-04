@@ -4,13 +4,13 @@
 # The orb-agent runs as a standalone privileged container (not compose-managed)
 # with host networking for raw socket access (SYN scans, ICMP).
 #
-# Credentials: fetched by the agent directly from OpenBao at runtime via
-# the vault secrets manager integration. No plaintext secrets in config files.
+# Credentials: The agent.yaml is templated by Ansible with OpenBao address
+# and AppRole credentials baked in. The agent fetches Diode + SNMP credentials
+# from OpenBao at runtime via ${vault://...} references.
 #
 # Expected variables:
 #   service_name, monorepo_deploy_path, _monorepo_dir
 #   container_engine (docker or podman)
-#   openbao_addr, bao_role_id, bao_secret_id (for vault secrets manager)
 
 - name: "Check agent.yaml exists"
   ansible.builtin.stat:
@@ -19,25 +19,12 @@
 
 - name: "Skip orb-agent (no agent.yaml)"
   ansible.builtin.debug:
-    msg: "Skipping orb-agent — discovery/agent.yaml not found. Copy from agent.yaml.example and customize."
+    msg: "Skipping orb-agent — discovery/agent.yaml not found."
   when: not _agent_yaml.stat.exists
 
 - name: "Deploy orb-agent"
   when: _agent_yaml.stat.exists
   block:
-    - name: "Read orb-agent credentials from .env"
-      ansible.builtin.shell: |
-        grep '^ORB_AGENT_CLIENT_ID=' "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}/.env" | cut -d= -f2-
-      register: _orb_id
-      changed_when: false
-      no_log: true
-
-    - name: "Verify credentials available"
-      ansible.builtin.assert:
-        that:
-          - _orb_id.stdout | length > 0
-        fail_msg: "orb-agent client_id missing from .env. Run manage-diode-credentials first."
-
     - name: "Stop existing orb-agent"
       ansible.builtin.shell: |
         {{ container_engine | default('docker') }} stop netbox-orb-agent 2>/dev/null || true
@@ -45,30 +32,19 @@
       become: true
       changed_when: false
 
-    - name: "Clean stale agent-resolved.yaml"
-      ansible.builtin.shell: |
-        cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-        [ -d "discovery/agent-resolved.yaml" ] && rm -rf "discovery/agent-resolved.yaml" || true
-        rm -f "discovery/agent-resolved.yaml" 2>/dev/null || true
-      changed_when: false
-
-    - name: "Start orb-agent (privileged, host networking, OpenBao vault integration)"
+    - name: "Start orb-agent (privileged, host networking)"
       ansible.builtin.shell: |
         cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
         sudo {{ container_engine | default('docker') }} run -d \
           --name netbox-orb-agent \
           --privileged \
           --net=host \
-          -e "OPENBAO_ADDR={{ openbao_addr | default('') }}" \
-          -e "BAO_ROLE_ID={{ bao_role_id | default('') }}" \
-          -e "BAO_SECRET_ID={{ bao_secret_id | default('') }}" \
           -v "$(pwd)/discovery/agent.yaml:/opt/orb/agent.yaml:ro" \
           -v "$(pwd)/discovery/snmp-extensions:/opt/orb/snmp-extensions:ro" \
           docker.io/netboxlabs/orb-agent:latest \
           run -c /opt/orb/agent.yaml
       become: true
       register: _orb_start
-      no_log: true
 
     - name: "Wait for orb-agent to be running"
       ansible.builtin.shell: |
@@ -80,6 +56,13 @@
       until: _orb_running.stdout == 'true'
       changed_when: false
 
-    - name: "Orb Agent deployed"
+    - name: "Check agent logs for vault auth"
+      ansible.builtin.shell: |
+        {{ container_engine | default('docker') }} logs netbox-orb-agent 2>&1 | tail -5
+      become: true
+      register: _orb_logs
+      changed_when: false
+
+    - name: "Orb Agent status"
       ansible.builtin.debug:
-        msg: "orb-agent running with credential {{ _orb_id.stdout }} (secrets from OpenBao)"
+        var: _orb_logs.stdout_lines

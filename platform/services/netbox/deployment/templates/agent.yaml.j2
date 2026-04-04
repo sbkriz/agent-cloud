@@ -1,0 +1,112 @@
+# Orb Agent Configuration — Rendered by Ansible
+# OpenBao address and AppRole credentials resolved at deploy time.
+# vault:// references resolved by the orb-agent at runtime.
+
+orb:
+  secrets_manager:
+    active: vault
+    sources:
+      vault:
+        address: "{{ openbao_addr }}"
+        timeout: 30
+        auth: "approle"
+        auth_args:
+          role_id: "{{ bao_role_id }}"
+          secret_id: "{{ bao_secret_id }}"
+          mount_path: "approle"
+        schedule: "0 */1 * * *"
+
+  config_manager:
+    active: local
+
+  backends:
+    network_discovery:
+    snmp_discovery:
+    common:
+      diode:
+        target: grpc://localhost:8081/diode
+        client_id: "${vault://secret/services/netbox/orb_agent_client_id}"
+        client_secret: "${vault://secret/services/netbox/orb_agent_client_secret}"
+        agent_name: netbox-discovery-agent
+
+  policies:
+    network_discovery:
+      subnet_scan:
+        config:
+          schedule: "0 */4 * * *"
+          timeout: 15
+          defaults:
+            tags:
+              - discovery-network
+              - "site:uhstray-dc"
+              - "discovery:auto"
+            description: "Auto-discovered by network scan"
+        scope:
+          targets:
+            - 192.168.1.0/24
+          scan_types: [syn]
+          ping_scan: true
+          icmp_echo: true
+          icmp_timestamp: true
+          icmp_netmask: true
+          ports: [22, 53, 80, 161, 443, 3389, 5060, 8000, 8080, 8081, 8200, 8443]
+          fast_mode: true
+          timing: 3
+          max_retries: 2
+          use_target_masks: true
+
+    snmp_discovery:
+      snmp_scan:
+        config:
+          schedule: "0 */6 * * *"
+          timeout: 10
+          snmp_timeout: 10
+          retries: 5
+          lookup_extensions_dir: /opt/orb/snmp-extensions
+          defaults:
+            site: "Uhstray.io Datacenter"
+            role: server
+            tags:
+              - discovery-snmp
+              - "site:uhstray-dc"
+              - "discovery:auto"
+            device:
+              description: "Auto-discovered via SNMP"
+              comments: "Populated by orb-agent. sysObjectID determines device type."
+            interface:
+              description: "Auto-discovered interface"
+              enabled: true
+            ip_address:
+              description: "Auto-discovered IP"
+        scope:
+          targets:
+            - host: 192.168.1.0/24
+          authentication:
+            protocol_version: SNMPv2c
+            community: "${vault://secret/services/netbox/snmp_community}"
+          max_mib_depth: 10
+          max_repetitions: 10
+
+      infrastructure_scan:
+        config:
+          schedule: "0 */6 * * *"
+          timeout: 10
+          snmp_timeout: 10
+          retries: 5
+          lookup_extensions_dir: /opt/orb/snmp-extensions
+          defaults:
+            site: "Uhstray.io Datacenter"
+            role: gateway-router
+            tags:
+              - discovery-snmp
+              - "site:uhstray-dc"
+              - infrastructure
+            device:
+              description: "Infrastructure device (gateway/router/switch)"
+              comments: "Known infrastructure. sysObjectID mapped via snmp-extensions/."
+        scope:
+          targets:
+            - host: 192.168.1.1
+          authentication:
+            protocol_version: SNMPv2c
+            community: "${vault://secret/services/netbox/snmp_community}"
