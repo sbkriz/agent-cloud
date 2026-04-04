@@ -511,6 +511,8 @@ start_orb_agent() {
   # reliably perform env var substitution on its config file. Write the resolved
   # copy to discovery/ (gitignored, chmod 600) so credentials never leak.
   local resolved_config="${compose_dir}/discovery/agent-resolved.yaml"
+  # Docker may create this as a directory if the bind-mount source was missing
+  [ -d "$resolved_config" ] && rm -rf "$resolved_config"
   sed \
     -e "s|\${DIODE_CLIENT_ID}|${client_id}|g" \
     -e "s|\${DIODE_CLIENT_SECRET}|${client_secret}|g" \
