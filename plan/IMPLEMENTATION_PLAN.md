@@ -399,7 +399,7 @@ Fully implemented with Ansible playbooks for Semaphore orchestration:
 
 ## Phase 0.75: Semaphore Automation Infrastructure
 
-**Status:** MOSTLY COMPLETE — Monorepo migration done, SSH hardened, Semaphore pipeline operational. NetBox deployment in progress. Dynamic inventory migration pending.
+**Status:** COMPLETE — Monorepo consolidated, SSH hardened, Semaphore pipeline operational, NetBox deployed with Diode discovery + Orb Agent (OpenBao vault integration). Composable automation implemented. Dynamic inventory migration deferred to Phase 1.
 
 **Goal:** Establish Semaphore as the production-grade automation platform with git-based workflows, OpenBao-backed credentials, and full service deployment automation.
 
@@ -431,20 +431,23 @@ Eliminated password-based SSH. Per-service ed25519 keys stored in OpenBao.
 - [x] Password auth disabled, root login disabled on all 6 VMs
 - [x] All verification automated (password rejected + key auth confirmed)
 
-### Step 3: Service Deployment via Semaphore (IN PROGRESS — 2026-04-01)
+### Step 3: Service Deployment via Semaphore (NETBOX COMPLETE — 2026-04-04)
 
 **Completed:**
 - [x] `install-docker.yml` — Docker CE install playbook (official repo)
 - [x] Docker installed on NetBox VM
-- [x] NetBox deploy.sh running through step 8 (Docker Compose startup)
-- [x] OpenBao secret storage added to NetBox deploy.sh (step 3b)
-- [x] Staged Docker Compose startup to avoid DNS race conditions
+- [x] NetBox fully deployed via composable 5-phase pipeline (2026-04-04)
+- [x] Diode discovery pipeline operational (ingester, reconciler, auth, Hydra)
+- [x] Orb Agent deployed with OpenBao vault integration (SYN scan + SNMP discovery)
+- [x] 32 IPs + pfSense gateway device discovered in NetBox
+- [x] Composable automation: manage-secrets, manage-diode-credentials, manage-approle, deploy-orb-agent
+- [x] Semaphore templates managed as code (platform/semaphore/templates.yml)
 
-**In progress:**
-- [ ] Complete NetBox deployment (Hydra startup timing fix applied, needs re-run)
-- [ ] Deploy NocoDB via Semaphore
-- [ ] Deploy n8n via Semaphore
-- [ ] Validate all services healthy after deployment
+**Pending:**
+- [ ] Deploy NocoDB via composable pattern
+- [ ] Deploy n8n via composable pattern
+- [ ] Create run-pfsense-sync.yml as independent 15-min scheduled workflow
+- [ ] Create dedicated orb-agent AppRole (currently using Semaphore's)
 
 ### Step 4: Remaining Infrastructure (PENDING)
 

@@ -42,15 +42,17 @@ Or via Semaphore (production):
 2. Run the corresponding task template in Semaphore (e.g., "Deploy NocoDB")
 3. Semaphore clones the repo, SSHes to the target VM, runs `deploy.sh`
 
-### Deploy Pattern
+### Composable Deploy Pattern
 
-All services are idempotent -- safe to re-run:
+Deployments are orchestrated by Ansible via Semaphore. Each service follows the composable pattern defined in `plan/AUTOMATION-COMPOSABILITY-PLAN.md`:
 
-1. **Generate secrets** from `secrets/` directory (creates if missing, reuses if existing)
-2. **Start containers** via Docker/Podman Compose
-3. **Bootstrap credentials** (programmatic API token creation)
-4. **Store in OpenBao** (secrets backbone for cross-service access)
-5. **Validate** via health check
+1. **Manage secrets** -- Ansible fetches/generates credentials from OpenBao, templates `.env` files
+2. **Start containers** -- deploy.sh handles Docker Compose lifecycle (pull, build, start)
+3. **Configure application** -- post-deploy.sh runs migrations, creates users, registers OAuth2 clients
+4. **Sync credentials** -- Ansible pushes any runtime-created credentials back to OpenBao
+5. **Verify** -- Health check confirms the service is running
+
+deploy.sh does NOT generate secrets or interact with OpenBao. All credential management is Ansible-driven.
 
 ## AI Agents
 
@@ -78,15 +80,17 @@ All services are idempotent -- safe to re-run:
 ```
 agent-cloud/
   platform/
-    services/             Per-service: deployment/ + context/
-      openbao/            Secrets backbone
+    services/             Per-service: deployment/ + context/ + templates/
+      openbao/            Secrets backbone (AppRole, KV v2, policies)
       nocodb/             Data layer
       n8n/                Workflow automation
       semaphore/          Deployment orchestration
-      netbox/             Infrastructure modeling
+      netbox/             Infrastructure modeling + Diode discovery + Orb Agent
       caddy/              Reverse proxy
       inference/          LLM inference (planned)
     playbooks/            Ansible playbooks (see playbooks/README.md)
+      tasks/              Composable tasks (manage-secrets, deploy-orb-agent, etc.)
+    semaphore/            Semaphore template definitions + setup playbook
     lib/                  Shared bash libraries (common.sh, bao-client.sh)
     inventory/            Inventory templates (placeholders, no real IPs)
     hypervisor/proxmox/   VM provisioning and cloud-init
@@ -95,7 +99,7 @@ agent-cloud/
     nemoclaw/             Headless workflow agent
     netclaw/              Network engineering agent
     cowork/               Interactive architect agent
-  plan/                   Architecture and implementation plans
+  plan/                   Architecture, implementation, and composability plans
 ```
 
 Each service directory uses the **deployment/ + context/** split:
@@ -111,22 +115,28 @@ Semaphore environment (AppRole role-id + secret-id only)
   -> playbook starts
   -> community.hashi_vault lookup
   -> OpenBao AppRole auth -> scoped token -> fetch secrets
-  -> deploy.sh generates runtime env from OpenBao
-  -> compose up -d
+  -> Ansible manage-secrets.yml templates .env files
+  -> deploy.sh starts containers (reads .env, no OpenBao interaction)
 ```
 
 Private configuration (real IPs, production inventory, credential backups) lives in the separate **site-config** repository.
 
 ## Automation
 
-Deployments are orchestrated by **Semaphore** running Ansible playbooks from this repo:
+Deployments are orchestrated by **Semaphore** running composable Ansible playbooks. Each concern is an independent workflow:
 
-- **Deploy playbooks**: `deploy-<service>.yml` -- clone repo, run deploy.sh, health check
-- **Update playbooks**: `update-<service>.yml` -- pull images, restart, health check
-- **SSH hardening**: `distribute-ssh-keys.yml` + `harden-ssh.yml` -- key distribution and sshd lockdown
-- **Provisioning**: `provision-vm.yml` -- clone Proxmox template, configure cloud-init
+| Workflow | Purpose |
+|----------|---------|
+| `deploy-<service>.yml` | Full deploy: secrets → containers → app config → verify |
+| `deploy-orb-agent.yml` | Standalone: Diode credentials + orb-agent for NetBox |
+| `clean-deploy-<service>.yml` | Destructive rebuild: wipe volumes + fresh deploy |
+| `distribute-ssh-keys.yml` | Deploy SSH keys from OpenBao to VMs |
+| `harden-ssh.yml` | Lock down sshd (after key verification) |
+| `check-secrets.yml` | Read-only secret inventory from OpenBao |
 
-See `platform/playbooks/README.md` for conventions and full playbook reference.
+Playbooks use composable tasks from `platform/playbooks/tasks/` (manage-secrets, manage-diode-credentials, manage-approle, etc.). Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
+
+See `platform/playbooks/README.md` and `plan/AUTOMATION-COMPOSABILITY-PLAN.md` for architecture details.
 
 ## Technology Stack
 

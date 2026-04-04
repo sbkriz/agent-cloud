@@ -1,7 +1,7 @@
 # Automation Composability Plan
 
-**Date:** 2026-04-02
-**Status:** ACCEPTED — Implementing with NetBox as first service
+**Date:** 2026-04-02 (updated 2026-04-04)
+**Status:** IMPLEMENTED — NetBox fully deployed via composable pattern. Core task library proven. NocoDB and n8n rollout pending.
 **Context:** The NetBox deployment exposed that deploy.sh scripts mix infrastructure concerns (credential management, OpenBao) with container operations (compose, migrations). This plan decomposes service deployments into reusable Ansible building blocks that Semaphore orchestrates.
 
 ---
