@@ -71,6 +71,16 @@ Defer to those files when working within those directories.
 
 **OpenBao** manages all credentials. Ansible fetches secrets from OpenBao, templates compose-ready `.env` files, and deploy.sh only reads them. Deploy scripts do NOT generate or manage secrets.
 
+### Policy and Configuration Changes — Code Only
+
+**Never modify OpenBao policies, AppRoles, or Semaphore templates via ad-hoc API calls.** All changes must flow through code:
+
+- **OpenBao policies:** Edit `.hcl` files in `platform/services/openbao/deployment/config/policies/`, then run `apply-policy-<component>.yml` (per-component) or `apply-openbao-policies.yml` (all at once)
+- **AppRoles:** Use `tasks/manage-approle.yml` which creates both the policy and role
+- **Semaphore templates:** Edit `platform/semaphore/templates.yml`, then run `setup-templates.yml`
+
+This ensures all configuration is version-controlled, auditable, and reproducible.
+
 ### Credential Flow (Composable Pattern)
 
 ```

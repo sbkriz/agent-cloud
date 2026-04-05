@@ -1,0 +1,37 @@
+---
+# apply-openbao-policy.yml — Apply a single OpenBao policy from an .hcl file
+#
+# Expected variables:
+#   _policy_name  — name for the policy in OpenBao (e.g., "orb-agent")
+#   _policy_file  — path to the .hcl file (relative to playbook_dir or absolute)
+#   _bao_url, _bao_role_id, _bao_secret_id
+
+- name: "Authenticate to OpenBao"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/auth/approle/login"
+    method: POST
+    body_format: json
+    body:
+      role_id: "{{ _bao_role_id }}"
+      secret_id: "{{ _bao_secret_id }}"
+    status_code: [200]
+  register: _bao_auth
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: "Apply policy: {{ _policy_name }}"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/sys/policies/acl/{{ _policy_name }}"
+    method: PUT
+    headers:
+      X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+    body_format: json
+    body:
+      policy: "{{ lookup('file', _policy_file) }}"
+    status_code: [200, 204]
+  delegate_to: localhost
+
+- name: "Policy applied"
+  ansible.builtin.debug:
+    msg: "{{ _policy_name }}: applied from {{ _policy_file | basename }}"

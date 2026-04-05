@@ -1,0 +1,54 @@
+---
+# apply-openbao-policies.yml — Apply all OpenBao policies from .hcl files
+#
+# Reads every .hcl file from platform/services/openbao/deployment/config/policies/
+# and applies it to OpenBao via the API. Idempotent — safe to re-run.
+#
+# This is the ONLY way to modify OpenBao policies. Never use ad-hoc API calls.
+
+- name: "Apply OpenBao policies from code"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR')) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _policies_dir: "{{ playbook_dir }}/../services/openbao/deployment/config/policies"
+
+  tasks:
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+
+    - name: "Find all .hcl policy files"
+      ansible.builtin.find:
+        paths: "{{ _policies_dir }}"
+        patterns: "*.hcl"
+      register: _policy_files
+
+    - name: "Apply each policy"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/sys/policies/acl/{{ item.path | basename | regex_replace('\\.hcl$', '') }}"
+        method: PUT
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        body_format: json
+        body:
+          policy: "{{ lookup('file', item.path) }}"
+        status_code: [200, 204]
+      loop: "{{ _policy_files.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "Applied {{ _policy_files.files | length }} policies from {{ _policies_dir }}"

@@ -63,6 +63,18 @@ templates:
   - name: Sync Secrets to OpenBao
     playbook: platform/playbooks/sync-secrets-to-openbao.yml
 
+  - name: Apply All OpenBao Policies
+    playbook: platform/playbooks/apply-openbao-policies.yml
+
+  - name: Apply Policy - Orb Agent
+    playbook: platform/playbooks/apply-policy-orb-agent.yml
+
+  - name: Apply Policy - Semaphore
+    playbook: platform/playbooks/apply-policy-semaphore.yml
+
+  - name: Apply Policy - NemoClaw
+    playbook: platform/playbooks/apply-policy-nemoclaw.yml
+
   # ── SSH ────────────────────────────────────────────────────────
   - name: Distribute SSH Keys
     playbook: platform/playbooks/distribute-ssh-keys.yml
