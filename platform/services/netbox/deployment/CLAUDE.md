@@ -309,7 +309,7 @@ Prerequisites: install pfrest on the pfSense device, create an API key, and stor
 
 - **`timeout`** (in `config`): Network discovery timeout is in **minutes** (not seconds). TCP connect scans need ~10 min per /24 subnet; SYN scans need ~5 min. Default: 20 minutes. Without sufficient timeout, scans are killed mid-run ("nmap scan timed out") and no results are reported.
 - **`ports`** (in `scope`): Limits which ports nmap scans. Without this, nmap scans its default 1000 ports per IP. Specifying `ports: [22, 80, 443, 8080, ...]` dramatically reduces scan time.
-- **`os_detection`**: Not supported by the orb-agent network-discovery backend. Setting `os_detection: true` causes `exit status 1`. Do not use.
+- **`os_detection`**: Enables nmap OS fingerprinting (`-O`). Previously documented as causing `exit status 1` on older orb-agent versions. Re-enabled in v2.7.0 with `--privileged` container (has `CAP_NET_RAW`). If scans fail, remove this flag — the rest of the scan continues without it.
 
 ## Container Runtime Notes
 

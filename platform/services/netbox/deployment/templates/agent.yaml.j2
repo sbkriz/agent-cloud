@@ -45,6 +45,8 @@ orb:
           targets:
             - 192.168.1.0/24
           scan_types: [syn]
+          # OS fingerprinting (nmap -O, requires privileged)
+          os_detection: true
           # ICMP host discovery probes (run before port scan to find live hosts)
           # ping_scan is NOT set — it conflicts with scan_types
           icmp_echo: true
