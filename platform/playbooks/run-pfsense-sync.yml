@@ -67,16 +67,18 @@
     - name: "Run pfSense sync"
       ansible.builtin.shell: |
         cd "{{ _deploy_dir }}"
-        python3 lib/pfsense-sync.py
+        python3 lib/pfsense-sync.py 2>&1
       environment:
         PFSENSE_HOST: "{{ _pfsense_creds.json.data.data.host }}"
         PFSENSE_API_KEY: "{{ _pfsense_creds.json.data.data.api_key }}"
+        PFSENSE_VERIFY_SSL: "false"
         DIODE_TARGET: "grpc://localhost:8081/diode"
         DIODE_CLIENT_ID: "{{ _diode_creds.json.data.data.orb_agent_client_id }}"
         DIODE_CLIENT_SECRET: "{{ _diode_creds.json.data.data.orb_agent_client_secret }}"
       register: _sync
-      no_log: true
+      # no_log intentionally NOT set — credentials are in env vars, not stdout.
+      # Script output contains device data (IPs, interfaces) which is acceptable.
 
-    - name: "Sync output"
+    - name: "Sync result"
       ansible.builtin.debug:
         var: _sync.stdout_lines
