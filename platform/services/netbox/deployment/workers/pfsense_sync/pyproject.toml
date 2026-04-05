@@ -1,0 +1,9 @@
+[project]
+name = "pfsense-sync"
+version = "1.0.0"
+description = "pfSense REST API → NetBox Diode worker for orb-agent"
+requires-python = ">=3.10"
+dependencies = [
+    "requests",
+    "pyyaml",
+]

@@ -33,11 +33,7 @@ templates:
   - name: Deploy Orb Agent
     playbook: platform/playbooks/deploy-orb-agent.yml
 
-  - name: Run pfSense Sync
-    playbook: platform/playbooks/run-pfsense-sync.yml
-
-  - name: Setup pfSense Sync Timer
-    playbook: platform/playbooks/setup-pfsense-sync-timer.yml
+  # pfSense sync runs as an orb-agent worker (every 15 min, no separate playbook)
 
   # ── Updates ────────────────────────────────────────────────────
   - name: Update NocoDB
