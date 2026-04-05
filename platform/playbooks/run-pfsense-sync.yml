@@ -59,8 +59,7 @@
 
     - name: "Ensure pip dependencies installed"
       ansible.builtin.shell: |
-        cd "{{ _deploy_dir }}"
-        pip install --quiet netboxlabs-diode-sdk pyyaml requests 2>&1 | tail -1
+        python3 -m pip install --quiet netboxlabs-diode-sdk pyyaml requests 2>&1 | tail -3
       register: _pip
       changed_when: "'Successfully installed' in _pip.stdout"
 
