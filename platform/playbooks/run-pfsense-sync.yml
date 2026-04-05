@@ -1,0 +1,82 @@
+---
+# run-pfsense-sync.yml — Sync pfSense data to NetBox via Diode
+#
+# Fetches credentials from OpenBao, runs pfsense-sync.py on the NetBox VM.
+# Designed to run on a 15-minute systemd timer schedule.
+#
+# Credentials:
+#   - pfSense API key from secret/services/discovery/pfsense
+#   - Diode orb-agent client creds from secret/services/netbox
+#
+# Run via Semaphore: "Run pfSense Sync" template
+
+- name: "Sync pfSense to NetBox"
+  hosts: netbox_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Fetch pfSense credentials from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/discovery/pfsense"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _pfsense_creds
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Fetch Diode credentials from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _diode_creds
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Ensure pip dependencies installed"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        pip install --quiet netboxlabs-diode-sdk pyyaml requests 2>&1 | tail -1
+      register: _pip
+      changed_when: "'Successfully installed' in _pip.stdout"
+
+    - name: "Run pfSense sync"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        python3 lib/pfsense-sync.py
+      environment:
+        PFSENSE_HOST: "{{ _pfsense_creds.json.data.data.host }}"
+        PFSENSE_API_KEY: "{{ _pfsense_creds.json.data.data.api_key }}"
+        DIODE_TARGET: "grpc://localhost:8081/diode"
+        DIODE_CLIENT_ID: "{{ _diode_creds.json.data.data.orb_agent_client_id }}"
+        DIODE_CLIENT_SECRET: "{{ _diode_creds.json.data.data.orb_agent_client_secret }}"
+      register: _sync
+      no_log: true
+
+    - name: "Sync output"
+      ansible.builtin.debug:
+        var: _sync.stdout_lines

@@ -1,0 +1,132 @@
+---
+# setup-pfsense-sync-timer.yml — Install systemd timer for 15-min pfSense sync
+#
+# Creates a systemd service + timer on the NetBox VM that runs pfsense-sync.py
+# every 15 minutes. Credentials are fetched from OpenBao at each run.
+#
+# Requires become (creates systemd units).
+
+- name: "Setup pfSense sync systemd timer"
+  hosts: netbox_svc
+  gather_facts: false
+  become: true
+  vars:
+    _user: "{{ ansible_user }}"
+    _monorepo_dir: "/home/{{ _user }}/agent-cloud"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Fetch pfSense credentials from OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: "Fetch pfSense config"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/discovery/pfsense"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _pfsense
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: "Fetch Diode credentials"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/netbox"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _diode
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: "Create environment file for systemd service"
+      ansible.builtin.copy:
+        content: |
+          PFSENSE_HOST={{ _pfsense.json.data.data.host }}
+          PFSENSE_API_KEY={{ _pfsense.json.data.data.api_key }}
+          DIODE_TARGET=grpc://localhost:8081/diode
+          DIODE_CLIENT_ID={{ _diode.json.data.data.orb_agent_client_id }}
+          DIODE_CLIENT_SECRET={{ _diode.json.data.data.orb_agent_client_secret }}
+        dest: "/home/{{ _user }}/.pfsense-sync.env"
+        owner: "{{ _user }}"
+        mode: "0600"
+      no_log: true
+
+    - name: "Create systemd service unit"
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=pfSense REST API sync to NetBox via Diode
+          After=network.target docker.service
+
+          [Service]
+          Type=oneshot
+          User={{ _user }}
+          WorkingDirectory={{ _deploy_dir }}
+          EnvironmentFile=/home/{{ _user }}/.pfsense-sync.env
+          ExecStart=/usr/bin/python3 {{ _deploy_dir }}/lib/pfsense-sync.py
+          TimeoutStartSec=120
+          StandardOutput=journal
+          StandardError=journal
+        dest: /etc/systemd/system/pfsense-sync.service
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: "Create systemd timer (every 15 minutes)"
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=Run pfSense sync every 15 minutes
+
+          [Timer]
+          OnBootSec=5min
+          OnUnitActiveSec=15min
+          AccuracySec=1min
+
+          [Install]
+          WantedBy=timers.target
+        dest: /etc/systemd/system/pfsense-sync.timer
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: "Flush handlers"
+      ansible.builtin.meta: flush_handlers
+
+    - name: "Enable and start timer"
+      ansible.builtin.systemd:
+        name: pfsense-sync.timer
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: "Verify timer is active"
+      ansible.builtin.command: systemctl is-active pfsense-sync.timer
+      register: _timer_status
+      changed_when: false
+
+    - name: "Timer status"
+      ansible.builtin.debug:
+        msg: "pfsense-sync.timer: {{ _timer_status.stdout }} (runs every 15 minutes)"
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
