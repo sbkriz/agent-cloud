@@ -12,7 +12,7 @@
 2. **No expiry** — AppRole secret_ids have TTL=0, static KV secrets never expire
 3. **No audit trail** — No tracking of creation time, creator, last use, or purpose
 4. **No revocation workflow** — Decommissioned VMs leave orphaned credentials forever
-5. **Flat path structure** — `secret/services/*` has no site concept, won't scale
+5. **No multi-site path strategy** — `secret/services/*` has no mechanism for per-site isolation when scaling beyond one site
 6. **Static database passwords** — Postgres credentials persist indefinitely (highest risk)
 
 ---
@@ -28,39 +28,85 @@
 
 ---
 
-## Path Hierarchy (Multi-Site Ready)
+## Composable Vault Paths (Multi-Site Ready)
+
+Rather than hardcoding a site hierarchy into OpenBao paths, the path structure is driven by a **`vault_secret_prefix`** inventory variable defined in **site-config**. This keeps agent-cloud site-agnostic and makes multi-site a configuration change, not a vault restructuring.
+
+### How It Works
+
+The `manage-secrets.yml` task constructs paths from the inventory variable:
+
+```
+secret/data/{{ vault_secret_prefix }}/{{ service_name }}
+```
+
+Site-config's inventory controls the prefix per site:
+
+```yaml
+# site-config/inventory/production.yml
+agent_cloud:
+  vars:
+    vault_secret_prefix: "services"    # single-site (current)
+
+# Future: site-config/inventory/remote-site.yml
+remote_agent_cloud:
+  vars:
+    vault_secret_prefix: "sites/remote-dc/services"
+```
+
+### Single-Site Layout (Current)
+
+With `vault_secret_prefix: "services"`, paths remain exactly as they are today:
 
 ```
 secret/
-  global/                              # Shared across all sites
-    ssh/management                     # Central Semaphore management key
+  services/                            # vault_secret_prefix = "services"
+    netbox                             # All NetBox secrets
+    nocodb                             # NocoDB secrets
+    n8n                                # n8n secrets
+    ssh/management                     # Central SSH key
+    ssh/<service>                      # Per-service SSH keys
     approles/semaphore                 # Platform orchestrator credentials
-    approles/semaphore-read            # (policy ref, not stored here)
-
-  sites/{site_id}/                     # Per-site credentials
-    metadata                           # Site registry: name, location, status, created_at
-    services/
-      netbox                           # All NetBox secrets for this site
-      nocodb                           # NocoDB secrets
-      n8n                              # n8n secrets
-      openbao                          # (if site has local OpenBao)
+    approles/orb-agent                 # Orb-agent credentials
     discovery/
       pfsense                          # host, api_key
       snmp_v3                          # username, auth_password, priv_password
-      orb_agent                        # client_id, client_secret, created_at
-    ssh/
-      management                       # Site-specific SSH key
-      <service>                        # Per-service SSH keys
-    approles/
-      orb-agent                        # role_id, secret_id for this site's agent
 ```
 
-**Migration path (backward compatible):**
-- Phase 1 (weeks 1-2): Write to BOTH `secret/services/*` (old) AND `secret/sites/uhstray-dc/*` (new)
-- Phase 2 (weeks 3-4): Playbooks read from new paths, old paths are read-only fallback
-- Phase 3 (weeks 5-6): Archive old paths, remove dual-write
+### Multi-Site Layout (Future)
 
-**Current site:** `site_id = uhstray-dc`
+When a second site is added, its inventory sets a site-scoped prefix:
+
+```
+secret/
+  services/                            # vault_secret_prefix = "services" (original site)
+    netbox
+    nocodb
+    ...
+
+  sites/remote-dc/services/            # vault_secret_prefix = "sites/remote-dc/services"
+    netbox                             # Remote site's NetBox secrets
+    ssh/management                     # Remote site's SSH key
+    approles/orb-agent                 # Remote site's orb-agent
+    discovery/
+      pfsense
+      snmp_v3
+```
+
+### Why Not a Hardcoded Path Hierarchy
+
+- **Site identity is a site-config concern** — embedding `uhstray-dc` into agent-cloud playbooks or vault paths leaks private topology into the public repo
+- **No migration needed** — the current flat layout works as-is with `vault_secret_prefix: "services"`; multi-site is additive, not a restructure
+- **Composable** — each site's inventory controls its own vault prefix; adding a site doesn't require changing agent-cloud code
+- **AppRole policies follow the same pattern** — scoped to `{{ vault_secret_prefix }}/*` per site
+
+### Migration Path
+
+No dual-write migration is required. The current `secret/services/*` paths continue to work unchanged:
+
+- **Now:** Add `vault_secret_prefix: "services"` to site-config inventory (matches existing layout)
+- **When adding a second site:** Create a new inventory file with `vault_secret_prefix: "sites/<site_id>/services"` and provision that site's secrets under the new prefix
+- **Original site stays untouched** — no path moves, no dual-write, no archive phase
 
 ---
 
@@ -159,7 +205,7 @@ resource "vault_database_secret_backend_role" "netbox_app" {
 
 **Impact:** Services request fresh DB credentials on startup. Credentials auto-expire after 1 hour. No static passwords to compromise.
 
-**Migration:** Phase 2 — after path hierarchy is in place. Requires compose changes to fetch credentials at container startup via entrypoint script.
+**Migration:** Phase 2 — after composable vault paths and credential metadata are in place. Requires compose changes to fetch credentials at container startup via entrypoint script.
 
 ---
 
@@ -173,15 +219,15 @@ bao audit enable file file_path=/openbao/audit/audit.log
 ```
 
 Pipe to observability stack (Loki) for alerting on:
-- Same secret read >100x in 1 minute (potential exfiltration)
+- Same secret read >10x in 1 minute (potential exfiltration)
 - Secret access from unknown AppRole
 - Failed authentication attempts
 
 ### Credential Inventory Playbook: `audit-credentials.yml`
 
-Scheduled weekly via Semaphore:
-1. List all sites from `secret/sites/*/metadata`
-2. For each site: list all credentials with creation dates
+Scheduled weekly via Semaphore (runs per-site via inventory targeting):
+1. List all credentials under `{{ vault_secret_prefix }}` with creation dates
+2. Compare against site-config inventory for expected services
 3. List all Hydra OAuth2 clients with ages
 4. List all AppRoles and their secret_id ages
 5. Report: active, stale (>30 days unused), expired, orphaned
@@ -207,22 +253,28 @@ Every `manage-secrets.yml` call writes KV v2 custom metadata:
 ### Adding a New Site
 
 1. Create site in NetBox (DCIM > Sites)
-2. Run `provision-site.yml`:
-   - Creates `secret/sites/{site_id}/metadata` with site info
-   - Generates SSH keys, stores at `secret/sites/{site_id}/ssh/`
-   - Creates orb-agent AppRole scoped to `secret/sites/{site_id}/*`
-   - Provisions pfSense API key path, SNMP credential path
-3. Deploy services to the site (using site-scoped credentials)
+2. Add site inventory in **site-config** (new file or inventory group):
+   - Define `vault_secret_prefix: "sites/<site_id>/services"` for the new site
+   - Define host entries with `ansible_host`, `service_name`, `monorepo_deploy_path`
+   - Set `openbao_addr` (central OpenBao or site-local instance)
+3. Run `provision-site.yml` against the new inventory:
+   - Creates site metadata in OpenBao at `{{ vault_secret_prefix }}/../metadata`
+   - Generates SSH keys, stores at `{{ vault_secret_prefix }}/../ssh/`
+   - Creates orb-agent AppRole scoped to `{{ vault_secret_prefix }}/*`
+   - Discovers site core architecture (on-premise datacenter + VM, on-premise datacenter + kubernetes, cloud provider + kubernetes)
+   - Provisions API and SNMP credentials based on discovered site architecture
+4. Deploy services to the site using standard playbooks (paths resolve via inventory)
 
 ### Decommissioning a Site
 
-1. Run `decommission-site.yml`:
-   - Mark `secret/sites/{site_id}/metadata:status = decommissioning`
+1. Run `decommission-site.yml` against the site's inventory:
+   - Mark site metadata status as `decommissioning`
    - Stop all services on site VMs
-   - Revoke all AppRole secret_ids for the site
+   - Revoke all AppRole secret_ids scoped to `{{ vault_secret_prefix }}`
    - Delete all Diode/Hydra clients for the site
    - Archive credentials (don't delete — keep audit trail for 90 days)
 2. After 90 days: `archive-site.yml` deletes credential data permanently
+3. Remove or archive the site's inventory file in site-config
 
 ---
 
@@ -230,13 +282,13 @@ Every `manage-secrets.yml` call writes KV v2 custom metadata:
 
 | Phase | What | Effort | Impact | Depends On |
 |-------|------|--------|--------|------------|
-| 1. Path hierarchy | Create `secret/sites/uhstray-dc/`, dual-write | Low | Foundation for everything | — |
+| 1. Composable vault paths | Add `vault_secret_prefix` to site-config inventory, update `manage-secrets.yml` to use it | Low | Foundation for multi-site, no path migration needed | — |
 | 2. Credential metadata | Add created_at/creator/site to manage-secrets.yml | Low | Audit visibility | Phase 1 |
 | 3. AppRole TTL enforcement | secret_id_ttl=90d, token_num_uses=25 | Low | Limits blast radius | — |
 | 4. Diode rotation playbook | Create→Verify→Retire with Hydra admin delete | Medium | Stops credential accumulation | Phase 2 |
-| 5. Audit playbook + logging | audit-credentials.yml + OpenBao audit backend | Medium | Compliance, detection | Phase 2 |
+| 5. Audit playbook + logging | audit-credentials.yml + OpenBao audit backend | Medium | Compliance, detection | Phase 2, o11y repository integrated into agent-cloud and Loki deployment |
 | 6. Dynamic DB secrets | Configure database engine for Postgres | High | Eliminates static DB passwords | Phase 1 |
-| 7. Site lifecycle playbooks | provision-site.yml, decommission-site.yml | Medium | Multi-site readiness | Phases 1-5 |
+| 7. Site lifecycle playbooks | provision-site.yml, decommission-site.yml (site identity from site-config inventory) | Medium | Multi-site readiness | Phases 1-5 |
 
 ---
 
@@ -245,7 +297,7 @@ Every `manage-secrets.yml` call writes KV v2 custom metadata:
 | Reviewer | Key Finding |
 |----------|------------|
 | **Security** | secret_id TTL=0 is critical risk. 90-day lifecycle for Diode clients. Per-site AppRole isolation. |
-| **Network** | Per-site vault paths with site-scoped AppRoles. Central OpenBao, path-based isolation. |
+| **Network** | Composable vault path prefix per site via inventory. Central OpenBao, path-based isolation via AppRole policies. |
 | **Infrastructure** | Dynamic DB secrets highest impact. Token usage limits (num_uses=25). Audit backend to Loki. Namespaces overkill. |
 | **Automation** | No delete_client in Diode plugin — use Hydra admin API. Create→Verify→Retire pattern. Monthly rotation schedule. |
-| **Architecture** | `secret/global/` + `secret/sites/{site_id}/` hierarchy. KV v2 metadata for audit. 6-week dual-write migration. NetBox Sites as credential registry. |
+| **Architecture** | Composable `vault_secret_prefix` driven from site-config inventory. KV v2 metadata for audit. No migration needed — current paths work as-is. NetBox Sites as credential registry. |
