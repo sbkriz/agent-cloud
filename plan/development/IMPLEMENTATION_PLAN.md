@@ -32,22 +32,28 @@ Claude Cowork runs on the user's personal device with browser automation, local 
 
 Each service runs on its own VM, provisioned via the Proxmox API on aurora ({{ proxmox_host }}). OpenBao has been separated from NocoDB to give the secrets backbone an independent failure domain.
 
-| VM Name | IP | Services | Port(s) | Runtime |
-|---|---|---|---|---|
-| `openbao` | `{{ openbao_host }}` | OpenBao | 8200 | Podman |
-| `nocodb` | `{{ nocodb_host }}` | NocoDB + Postgres | 8181 | Podman |
-| `n8n` | `{{ n8n_host }}` | n8n + Worker + Postgres + Redis | 5678 | Podman |
-| `semaphore` | `{{ semaphore_host }}` | Semaphore + Postgres | 3000 | Podman |
-| `nemoclaw` | `{{ nemoclaw_host }}` | NemoClaw + OpenShell | — | Docker |
-| `netbox` | `{{ netbox_host }}` | NetBox + Diode Pipeline | 8000 | Podman |
+| VM Name | VMID | IP | Services | Port(s) | Runtime | Cores | Memory | Disk |
+|---|---|---|---|---|---|---|---|---|
+| `openbao` | 210 | `{{ openbao_host }}` | OpenBao | 8200 | Podman | 2 | 2 GB | 20 GB |
+| `nocodb` | 161 | `{{ nocodb_host }}` | NocoDB + Postgres | 8181 | Podman | 2 | 4 GB | 40 GB |
+| `n8n` | 118 | `{{ n8n_host }}` | n8n + Worker + Postgres + Redis | 5678 | Podman | 4 | 4 GB | 40 GB |
+| `semaphore` | 117 | `{{ semaphore_host }}` | Semaphore + Postgres | 3000 | Podman | 2 | 2 GB | 20 GB |
+| `nemoclaw` | 163 | `{{ nemoclaw_host }}` | NemoClaw + OpenShell | — | Docker | 4 | 8 GB | 60 GB |
+| `netbox` | 116 | `{{ netbox_host }}` | NetBox + Diode Pipeline | 8000 | Podman | 2 | 4 GB | 40 GB |
+
+All VMs are cloned from template VMID 9000 (Ubuntu 24.04 cloud-init) on the Proxmox cluster. VM placement is determined at provisioning time by cluster load; default target node is aurora. Resource specs are defined in `proxmox/vm-specs.yml`.
 
 ### Proxmox API Access
 
 VM provisioning and monitoring uses the PVE REST API at `https://{{ proxmox_host }}:8006`. API token `{{ proxmox_token_id }}` stored in `proxmox/secrets/`. Auth header format: `Authorization: PVEAPIToken={{ proxmox_token_id }}=<token>`.
 
-### Design References
+### Deployment Modes
 
-Full architecture design, programmatic API key bootstrap methods, and migration plan: [SYSTEM-DESIGN-VM-DEPLOYMENT.md](SYSTEM-DESIGN-VM-DEPLOYMENT.md)
+1. **Semaphore (production, recommended)** — task templates trigger composable playbooks: sparse checkout → manage secrets → deploy.sh → verify health. All deployments should go through Semaphore.
+2. **Ansible CLI (development)** — `ansible-playbook deploy-<service>.yml` runs the same composable playbook locally. Requires Semaphore environment variables for OpenBao access.
+3. **Legacy CLI** — `orchestrate.sh` for quick local deploys (supports `--skip`, `--only`, `--dry-run`). Bypasses Ansible credential lifecycle — use only for local development.
+
+> **Warning:** Running `deploy.sh` directly from the clone directory bypasses the Ansible secret lifecycle (no `manage-secrets.yml`, no env file templating). deploy.sh must run from the runtime directory `~/services/<name>/` with env files already templated by Ansible.
 
 ---
 
@@ -64,6 +70,8 @@ Full architecture design, programmatic API key bootstrap methods, and migration 
 ---
 
 ## Phase 0: Foundation
+
+> **Legacy phase.** Phase 0 describes the initial local development bootstrap using monolithic deploy.sh scripts that handled secret generation, OpenBao interaction, and container lifecycle in a single script. This pattern has been superseded by the composable automation architecture documented in [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md), where Ansible owns the secret lifecycle and deploy.sh is pure container operations. Phase 0 content is retained for historical context.
 
 **Status:** FUNCTIONAL — 13 PASS / 0 FAIL / 8 WARN (placeholder credentials + NemoClaw pending)
 **Full report:** [PHASE0-REPORT.md](PHASE0-REPORT.md)
@@ -91,7 +99,7 @@ Full architecture design, programmatic API key bootstrap methods, and migration 
 
 **Smoke test:** Run `validate.sh` end-to-end. All container health checks pass. OpenBao CLI responds to `bao status`.
 
-**Security:** OpenBao runs with `tls_disable=1` (acceptable for loopback in Phase 0). No credentials committed to git. Secrets in `secrets/` directory gitignored.
+**Security:** OpenBao runs with `tls_disable=1` (acceptable for loopback in Phase 0). No credentials committed to git. *(Phase 0 used `secrets/` directory with `.gitignore`; this has been superseded by the source/runtime directory split — see Composable Automation Architecture section.)*
 
 ### Phase 0 Close-Out Checklist
 
@@ -111,38 +119,98 @@ podman exec -e "BAO_TOKEN=$ROOT_TOKEN" ac-openbao bao \
   kv patch secret/services/proxmox \
     url="https://{{ proxmox_host }}:8006" \
     token_id="{{ proxmox_token_id }}" \
-    api_token="$(cat ../proxmox/secrets/stray@pve\!workflow-agent.txt)"
+    api_token="$(cat ../proxmox/secrets/{{ proxmox_token_id }}.txt)"
 ```
 
 #### 2. Programmatic API Token Bootstrap
 
-API tokens are created programmatically by each service's `deploy.sh` — no manual UI login required. This follows the pattern already proven in the NetBox deployment (`netbox/deploy.sh`). Full implementation details in [SYSTEM-DESIGN-VM-DEPLOYMENT.md](SYSTEM-DESIGN-VM-DEPLOYMENT.md).
+API tokens are created programmatically by each service's `deploy.sh` — no manual UI login required. This follows the pattern already proven in the NetBox deployment (`netbox/deploy.sh`).
 
-| Service | Bootstrap Method | Admin Creation | Token Endpoint |
-|---|---|---|---|
-| **OpenBao** | CLI (`bao operator init`) | Root token from init | AppRole: `bao write auth/approle/login` |
-| **NocoDB** | REST API | `POST /api/v1/auth/user/signup` (first boot only) | `POST /api/v1/tokens` with JWT auth |
-| **n8n** | REST API | `POST /api/v1/owner/setup` (first boot only) | `POST /api/v1/me/api-keys` (DB insert fallback) |
-| **Semaphore** | REST API | Auto-created via `SEMAPHORE_ADMIN_PASSWORD` env var | `POST /api/auth/login` → `POST /api/user/tokens` |
-| **GitHub** | Manual (external) | N/A | Fine-grained PAT via GitHub.com Settings |
-| **Discord** | Manual (external) | N/A | Bot token via Discord Developer Portal |
-| **Proxmox** | Already done | N/A | Token `{{ proxmox_token_id }}` in `proxmox/secrets/` |
+| Service | Bootstrap Method | Admin Creation | Token Endpoint | Idempotency |
+|---|---|---|---|---|
+| **OpenBao** | CLI (`bao operator init`) | Root token from init | AppRole: `bao write auth/approle/login` | Check `bao status` for initialized state |
+| **NocoDB** | REST API | `POST /api/v1/auth/user/signup` (first boot only) | `POST /api/v1/tokens` with JWT auth | Signin first; if 200, admin exists. List tokens before creating |
+| **n8n** | REST API | `POST /api/v1/owner/setup` (first boot only) | `POST /api/v1/me/api-keys` (DB insert fallback) | Owner setup only works when no owner exists |
+| **Semaphore** | REST API | Auto-created via `SEMAPHORE_ADMIN_PASSWORD` env var | `POST /api/auth/login` → `POST /api/user/tokens` | List tokens first (`GET /api/user/tokens`), skip if exists |
+| **GitHub** | Manual (external) | N/A | Fine-grained PAT via GitHub.com Settings | N/A |
+| **Discord** | Manual (external) | N/A | Bot token via Discord Developer Portal | N/A |
+| **Proxmox** | Already done | N/A | Token `{{ proxmox_token_id }}` in `proxmox/secrets/` | N/A |
 
-**External tokens (GitHub, Discord):** These are third-party services that require manual token creation. Store them via `setup-secrets.sh` as before. All other tokens are created automatically by the deploy scripts.
+**Per-Service Bootstrap Details:**
+
+**Semaphore** — Login via `POST /api/auth/login` with `{"auth":"admin","password":"<SEMAPHORE_ADMIN_PASSWORD>"}` returns a session cookie. Use that cookie to `POST /api/user/tokens` to create a bearer token. Store in OpenBao at `secret/services/semaphore`.
+
+**NocoDB** — On first boot, `POST /api/v1/auth/user/signup` with `{"email":"admin@my-site.io","password":"<NOCODB_ADMIN_PASSWORD>"}` returns a JWT. Use the JWT to `POST /api/v1/tokens` (or fallback `POST /api/v1/meta/api-tokens` — endpoint varies by NocoDB version; deploy script tries both). Store in OpenBao at `secret/services/nocodb`.
+
+**n8n** — On first boot, `POST /api/v1/owner/setup` creates the owner account. Login via `POST /api/v1/login` to get a session cookie. Use `POST /api/v1/me/api-keys` with `{"label":"nemoclaw-agent"}` to create an API key. **DB fallback:** if the API endpoint is unavailable, insert directly into the `api_key` table via `podman exec` into Postgres (key generated via `openssl rand -hex 20`, validated as hex-only before SQL insertion to prevent injection). Store in OpenBao at `secret/services/n8n`.
+
+**External tokens (GitHub, Discord):** These are third-party services that require manual token creation. GitHub PAT must be fine-grained, scoped to target repos only (not org-wide) with Repository (read) and Issues (read/write) permissions. Discord bot token from Developer Portal with `bot` scope, `Send Messages` + `Read Message History` permissions, invited to target guild. Store both via `setup-secrets.sh`.
 
 **Bootstrap sequence:** OpenBao first (secrets backbone) → NocoDB, n8n, Semaphore in parallel (each creates its own admin + API token) → store all tokens in OpenBao → NemoClaw last (reads tokens from OpenBao via AppRole).
 
+> **Legacy diagram.** This Phase 0 bootstrap flow shows deploy.sh directly interacting with OpenBao. In the current composable architecture, Ansible `manage-secrets.yml` handles all OpenBao reads/writes and templates env files. deploy.sh performs container operations only. See [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md).
+
+```mermaid
+sequenceDiagram
+    participant Deploy as deploy.sh
+    participant Bao as OpenBao
+    participant NocoDB as NocoDB
+    participant N8N as n8n
+    participant Sem as Semaphore
+
+    Note over Deploy: Phase 1 — Secrets Backbone
+    Deploy->>Bao: init + unseal + policies + AppRole
+
+    Note over Deploy: Phase 2 — Service Startup
+    Deploy->>NocoDB: compose up -d
+    Deploy->>N8N: compose up -d
+    Deploy->>Sem: compose up -d
+
+    Note over Deploy: Phase 3 — Wait for Health
+    Deploy->>NocoDB: GET /api/v1/health (poll)
+    Deploy->>N8N: GET /healthz (poll)
+    Deploy->>Sem: GET /api/ping (poll)
+
+    Note over Deploy: Phase 4 — Programmatic Token Creation
+    Deploy->>NocoDB: signup → JWT → create API token
+    NocoDB-->>Deploy: API token
+    Deploy->>Bao: kv patch secret/services/nocodb
+
+    Deploy->>N8N: owner setup → login → create API key
+    N8N-->>Deploy: API key
+    Deploy->>Bao: kv patch secret/services/n8n
+
+    Deploy->>Sem: login → create bearer token
+    Sem-->>Deploy: Bearer token
+    Deploy->>Bao: kv patch secret/services/semaphore
+
+    Note over Deploy: Phase 5 — Validate
+    Deploy->>Bao: kv get secret/services/* (verify all non-placeholder)
+    Deploy->>NocoDB: GET /api/v1/meta/tables (with token)
+    Deploy->>N8N: GET /api/v1/workflows (with key)
+    Deploy->>Sem: GET /api/projects (with token)
+```
+
+**Security checks per step:**
+
+| Step | Validation | Security Check |
+|------|-----------|----------------|
+| 1. Proxmox IP | `curl -sk https://{{ proxmox_host }}:8006/api2/json/version` → 200 | API token scoped to VM management only |
+| 2. API tokens | Each `bao kv get secret/services/<svc>` returns non-placeholder values | Tokens created programmatically, no manual UI login |
+| 3. External creds | `secret/services/github:pat` and `secret/services/discord:bot_token` are set | GitHub PAT fine-grained, Discord bot scoped to target guild |
+| 4. Validation | `validate.sh` returns 15 PASS / 0 FAIL / 0 WARN | No credential exposure in validate output |
+| 5. NemoClaw config | `agent-cloud.yaml` has real service endpoints, no placeholders | Network policy restricts to documented endpoints only |
+| 6. Connectivity | NemoClaw reads from all 6 services without errors | All credentials from OpenBao AppRole, not env files |
+
 #### 3. Store External Credentials in OpenBao
 
+> **Legacy workflow.** In the current composable architecture, external credentials are stored via `manage-secrets.yml` with `type: user` secret definitions (never auto-generated). No `secrets/` directory or `setup-secrets.sh` script needed. The workflow below is the Phase 0 bootstrap path.
+
 ```bash
-# First run creates secrets/service-credentials.env template
-./scripts/setup-secrets.sh
-
-# Fill in GitHub PAT and Discord bot token (only these two need manual creation)
-nano secrets/service-credentials.env
-
-# Second run stores them in OpenBao (kv patch preserves existing fields)
-./scripts/setup-secrets.sh
+# Legacy Phase 0 bootstrap:
+./scripts/setup-secrets.sh                    # Creates template, stores in OpenBao
+nano secrets/service-credentials.env          # Fill in GitHub PAT + Discord bot token
+./scripts/setup-secrets.sh                    # Second run stores values
 ```
 
 #### 4. Validate
@@ -183,8 +251,19 @@ podman ps --format "{{.Names}}\t{{.Status}}" | grep ac-
 ./scripts/unseal.sh                                          # if OpenBao was restarted
 curl -s http://localhost:8181/api/v1/health                  # NocoDB
 curl -s http://localhost:5678/healthz                        # n8n
-curl -s http://localhost:3100/api/ping                       # Semaphore
+curl -s http://localhost:3100/api/ping                       # Semaphore (3100 in local dev; 3000 in production)
 ./scripts/validate.sh
+
+# OpenBao policy and AppRole verification (requires root token or privileged access)
+ROOT_TOKEN=$(jq -r '.root_token' secrets/init.json)
+podman exec -e "BAO_TOKEN=$ROOT_TOKEN" ac-openbao bao policy list
+podman exec -e "BAO_TOKEN=$ROOT_TOKEN" ac-openbao bao read auth/approle/role/nemoclaw
+
+# Enumerate all secrets (check for placeholders vs real values)
+for svc in nocodb github discord proxmox n8n semaphore; do
+  echo "--- $svc ---"
+  podman exec -e "BAO_TOKEN=$ROOT_TOKEN" ac-openbao bao kv get secret/services/$svc
+done
 ```
 
 ---
@@ -195,7 +274,9 @@ curl -s http://localhost:3100/api/ping                       # Semaphore
 
 **Goal:** Split the monolithic compose stack into per-VM deployments, provision VMs via Proxmox API, and wire up Semaphore for ongoing configuration management. When complete, each service runs on its own VM with programmatic credential bootstrap — no manual UI steps except for GitHub PAT and Discord bot token.
 
-**Full design:** [SYSTEM-DESIGN-VM-DEPLOYMENT.md](SYSTEM-DESIGN-VM-DEPLOYMENT.md)
+> **Legacy phase.** Phase 0.5 established per-VM deployment with monolithic deploy.sh scripts that handled the full lifecycle (secret generation, container operations, OpenBao token storage). The deploy.sh responsibilities and secret management patterns described here have since been decomposed per [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md): Ansible now owns secret lifecycle, deploy.sh is pure container operations, and the source/runtime directory split replaces `secrets/` directories. The infrastructure work (compose files, Proxmox provisioning, Semaphore playbooks) remains valid.
+
+**Historical note:** Per-VM deployment was originally designed in a separate SYSTEM-DESIGN-VM-DEPLOYMENT.md document. That document has been deleted; all relevant content has been absorbed into this plan.
 
 ### What Was Built
 
@@ -218,18 +299,20 @@ curl -s http://localhost:3100/api/ping                       # Semaphore
 | AppRole auth per service | Each service authenticates with its own role-id/secret-id |
 | Health endpoints respond | Each service returns HTTP 200 within 30s of compose up |
 | Token round-trip | Fetch token from OpenBao, call service API, get HTTP 200 |
-| Semaphore task templates | 9+ templates created via setup-project.sh API |
+| Semaphore task templates | 25+ templates created via setup-project.sh API |
 
 **Smoke tests per step:**
 - Step 3 (deploy.sh): Run `deploy.sh` on each VM, verify all 5 steps complete
 - Step 6 (orchestrate.sh): `--dry-run` shows correct order, `--only openbao` deploys only OpenBao
-- Step 7 (Semaphore): Task template list via API matches expected 9 templates
+- Step 7 (Semaphore): Task template list via API matches expected 25+ templates
 
 **Architectural notes:** OpenBao on separate VM for independent failure domain. HTTP-only bao-client.sh — no binary dependency. Bootstrap order: OpenBao → services (parallel) → NemoClaw (last).
 
 **Security:** Credentials via stdin not CLI args. SQL injection protection in n8n DB fallback. Per-service AppRole policies enforce least privilege. Cookie jar cleanup on all exit paths.
 
-### Directory Structure (Legacy — now migrated to monorepo)
+### Directory Structure (Legacy — migrated to `platform/services/<name>/deployment/`)
+
+> **Note:** This structure reflects the Phase 0.5 layout under `deployments/agent-cloud/`. All deployment code has since been migrated to the monorepo pattern at `platform/services/<name>/deployment/`. The directory listing below is preserved for historical reference only — see the repo CLAUDE.md "Repository Structure" section for the current layout.
 
 ```
 deployments/agent-cloud/
@@ -325,52 +408,78 @@ Step 7: Wire Semaphore playbooks for ongoing management           ✅ DONE
 
 ### Per-Service deploy.sh Pattern
 
-Every `vms/<service>/deploy.sh` follows the same 5-step structure (matching the NetBox `deploy.sh` pattern):
+> **Legacy pattern (Phase 0.5).** The 5-step monolithic pattern below has been superseded by the composable architecture. See "Composable Automation Architecture" section below and [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md) for the current pattern where Ansible owns secrets and deploy.sh is pure container operations.
 
-1. **Generate secrets** — random passwords for Postgres, encryption keys; store in local `secrets/` (chmod 600, umask 077)
-2. **Start services** — `compose up -d`; wait for health endpoint
-3. **Bootstrap credentials** — service-specific: create admin user + API token programmatically via REST API
-4. **Store in OpenBao** — authenticate via AppRole (`bao-client.sh`); `kv patch` the token into the service's secret path
-5. **Validate** — health check + API token verification round-trip
+**Original 5-step pattern (historical):**
+
+1. ~~**Generate secrets**~~ — now handled by Ansible `manage-secrets.yml`
+2. **Start services** — `compose up -d`; wait for health endpoint *(still in deploy.sh)*
+3. **Bootstrap credentials** — create admin user + API token via REST API *(now split into post-deploy.sh)*
+4. ~~**Store in OpenBao**~~ — now handled by Ansible Phase 4 (sync runtime creds to OpenBao)
+5. ~~**Validate**~~ — now handled by Ansible `verify-health.yml`
 
 ### OpenBao Client Library (bao-client.sh)
 
-Service VMs talk to OpenBao over HTTP — no OpenBao binary required. The `bao-client.sh` library wraps the REST API using curl + jq:
+> **Legacy (Phase 0.5).** In the current composable architecture, deploy.sh does not authenticate to OpenBao or use bao-client.sh. Ansible manages all OpenBao interactions natively via `community.hashi_vault`. The bao-client.sh library remains in `platform/lib/` for edge cases but is not used in the deploy path.
 
-- `bao_authenticate()` — AppRole login from `secrets/{service}-role-id.txt` + `secrets/{service}-secret-id.txt`
-- `bao_authenticate_root()` — Root token from `secrets/init.json` (bootstrap only)
+The library wraps the OpenBao REST API using curl + jq (no binary required):
+
+- `bao_authenticate()` — AppRole login
+- `bao_authenticate_root()` — Root token auth (initial bootstrap only)
 - `bao_kv_get <path>` / `bao_kv_get_field <path> <field>` — read secrets
 - `bao_kv_put <path> key=value...` / `bao_kv_patch <path> key=value...` — write/update secrets
 - `bao_health()` / `bao_wait_ready()` — health checking
 
 ### AppRole Identities (Implemented)
 
-| Role | Policy | Access | Status |
+> **Updated:** AppRole creation has been decoupled from OpenBao's deploy.sh. In the current composable architecture, any service playbook provisions its own AppRole via `tasks/manage-approle.yml` with enforced TTLs. See [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md) "AppRole Management (Composable)" section.
+
+| Role | Policy | Access | Provisioned By |
 |---|---|---|---|
-| `nemoclaw` | `nemoclaw-read` | `secret/services/*` (read-only) | ✅ Created by openbao deploy.sh |
-| `nocodb` | `nocodb-write` | `secret/services/nocodb` (read/write) | ✅ Created by openbao deploy.sh |
-| `n8n` | `n8n-write` | `secret/services/n8n` (read/write) | ✅ Created by openbao deploy.sh |
-| `semaphore` | `semaphore-write` | `secret/services/semaphore` (read/write) | ✅ Created by openbao deploy.sh |
+| `nemoclaw` | `nemoclaw-read` | `secret/services/*` (read-only) | `manage-approle.yml` |
+| `nocodb` | `nocodb-write` | `secret/services/nocodb` (read/write) | `manage-approle.yml` |
+| `n8n` | `n8n-write` | `secret/services/n8n` (read/write) | `manage-approle.yml` |
+| `semaphore` | `semaphore-write` | `secret/services/semaphore` (read/write) | `manage-approle.yml` |
+| `orb-agent` | `orb-agent-read` | `secret/services/netbox/orb_agent_*` (read) | `manage-approle.yml` |
+
+**TTL Enforcement:** All AppRoles created via `manage-approle.yml` enforce `secret_id_ttl: 2160h` (90 days) and `token_num_uses: 25` by default. Semaphore's orchestrator AppRole is the documented exception (unlimited uses due to cross-service orchestration role).
+
+**Credential Flow (Composable Pattern):**
+
+In the composable architecture, there are no AppRole credential files on service VMs. The flow is:
+
+1. **Semaphore environment JSON** holds orchestrator AppRole `bao_role_id` + `bao_secret_id` + `openbao_addr`
+2. **Ansible `community.hashi_vault`** authenticates to OpenBao at playbook runtime (in memory)
+3. **`manage-secrets.yml`** fetches/generates secrets and templates env files to `~/services/<name>/`
+4. **deploy.sh** reads only from env files — never authenticates to OpenBao
+5. **post-deploy.sh** creates runtime credentials (e.g., OAuth2 clients), writes to `.env`
+6. **Ansible Phase 4** syncs any runtime-created credentials back to OpenBao
+
+Per-service AppRoles are provisioned via `manage-approle.yml` and stored in OpenBao at `secret/services/approles/<name>`. No `role-id.txt`/`secret-id.txt` files on VMs.
 
 ### Semaphore Orchestration (Implemented)
 
 Semaphore is the deployment orchestrator for production. Bootstrap sequence:
-1. `vms/semaphore/deploy.sh` — brings up Semaphore + creates API token (chicken-and-egg)
-2. `semaphore/setup-project.sh` — creates project, inventory, repository, environments, 17 task templates via API
+1. `deploy-semaphore.yml` — brings up Semaphore + creates API token (chicken-and-egg)
+2. `platform/semaphore/setup-templates.yml` — applies task templates from `platform/semaphore/templates.yml` (config-as-code, 25+ templates)
 3. Use Semaphore UI or API to run templates
 
-Task templates created: Deploy All, Validate All, Deploy {OpenBao, NocoDB, n8n, Semaphore}, Update {NocoDB, n8n, Semaphore}, Validate Proxmox Cluster, Create VM Template, Provision {OpenBao, NocoDB, n8n, Semaphore, NemoClaw, NetBox} VM.
+Task templates are managed as code in `platform/semaphore/templates.yml` — not through ad-hoc API calls. Adding a new template: add entry to `templates.yml`, run `setup-templates.yml`, verify in UI.
+
+Task templates include: Deploy All, Validate All, Deploy/Update/Clean Deploy per service, Validate Proxmox Cluster, Create VM Template, Provision per service, Distribute SSH Keys, Harden SSH, Rotate Diode Creds, Audit Credentials.
 
 ### Proxmox VM Provisioning (Implemented)
 
 Fully implemented with Ansible playbooks for Semaphore orchestration:
-- **`proxmox/lib/pve-api.sh`** — REST API wrapper (node ops, VM CRUD, clone, template, cloud-init, storage, task tracking, validation)
+- **`proxmox/lib/pve-api.sh`** — REST API wrapper (node ops, VM CRUD, clone, template, cloud-init, storage, task tracking, validation). Key functions: `pve_clone_vm` (clone template), `pve_configure_vm` (set cores/memory/IP via cloud-init `ipconfig0`), `pve_start_vm`, `pve_vm_status`. Auth via `PVEAPIToken` header.
 - **`proxmox/pre-validate.sh`** — CLI pre-validation (8 checks against live cluster)
-- **`proxmox/vm-specs.yml`** — Resource specs for all 6 services (cores, memory, disk, IP, node)
+- **`proxmox/vm-specs.yml`** — Resource specs for all 6 services (cores, memory, disk, IP, node) — see Production Topology table above
 - **`proxmox/cloud-init/`** — Ubuntu autoinstall config + seed ISO builder
 - **Ansible playbooks** — `proxmox-validate.yml` (pre/post validation), `provision-template.yml` (template from ISO), `provision-vm.yml` (clone + configure + start)
 - **Semaphore templates** — 8 new task templates (validate, create template, provision each service)
 - **Validated** against PVE 9.0.3 cluster: API, 11 nodes, alphacentauri storage (931GB on vm-lvms), Ubuntu ISO on SharedISOs, SSH keys, network bridge vmbr0
+
+**Known issue: VM template creation.** Automated autoinstall via ISO + seed ISO hangs on serial console. Template creation currently requires manual installation: install from `SharedISOs:iso/ubuntu-24.04.3-live-server-amd64.iso`, 2 CPU/2GB/20GB on `vm-lvms`, install packages (`qemu-guest-agent cloud-init podman curl jq ansible genisoimage`), create `{{ ansible_user }}` user with SSH key + NOPASSWD sudo, run `cloud-init clean`, truncate machine-id, remove SSH host keys, add cloud-init drive, convert to template (VMID 9000). `provision-template.yml` automates the post-install steps.
 
 ### Phase 0.5 Validation Checklist
 
@@ -384,7 +493,7 @@ Fully implemented with Ansible playbooks for Semaphore orchestration:
 - [x] Local deployment tested: all 4 services deploy, bootstrap, store tokens, validate (2026-03-28)
 - [x] Idempotency verified: second run is no-op with all services healthy
 - [x] Ansible playbooks validated: `validate-all.yml` reports all services HEALTHY
-- [x] Semaphore project setup: 9 task templates created via API
+- [x] Semaphore project setup: 25+ task templates created via API
 - [x] NemoClaw network policy updated: OpenBao = {{ openbao_host }}
 - [x] Proxmox API wrapper written and validated against live PVE 9.0.3 cluster (2026-03-28)
 - [x] VM template provisioning playbook with autoinstall cloud-init (2026-03-28)
@@ -498,7 +607,7 @@ Eliminated password-based SSH. Per-service ed25519 keys stored in OpenBao.
 | NetBox deploy completes all 17 steps | deploy.sh exits 0, health check passes |
 | NocoDB deploy via Semaphore | Task succeeds, HTTP 200 at health endpoint |
 | n8n deploy via Semaphore | Task succeeds, HTTP 200 at /healthz |
-| Monorepo cloned on each VM | `~/agent-cloud/` exists, `~/<service>` symlink works |
+| Monorepo cloned on each VM | `~/agent-cloud/` exists, `~/services/<service>/` runtime dir exists with env files and compose symlink |
 | Secrets stored in OpenBao | `bao kv get secret/services/netbox` returns superuser_password, url |
 
 **Smoke test:** Run "Validate All Services" — all 6 services HEALTHY. Run each "Deploy" template once.
@@ -641,6 +750,97 @@ When Phase 0.75 is complete:
 
 ---
 
+## Composable Automation Architecture
+
+**Status:** IMPLEMENTED for NetBox. NocoDB and n8n rollout pending.
+**Full specification:** [AUTOMATION-COMPOSABILITY-PLAN.md](AUTOMATION-COMPOSABILITY-PLAN.md)
+
+This section summarizes the composable automation patterns that govern all service deployments going forward. Phase 0/0.5 established the initial infrastructure; this architecture decomposes the monolithic deploy.sh into reusable Ansible building blocks.
+
+### Core Principles
+
+1. **OpenBao is the single source of truth** — No `secrets/` directory on VMs. No local secret generation. Ansible fetches from OpenBao, templates compose-ready env files.
+2. **Source/runtime directory split** — `~/agent-cloud/` is a read-only sparse git checkout. `~/services/<name>/` is the mutable runtime directory with env files and symlinks to compose file and libs. Filesystem isolation replaces `.gitignore` as the security boundary.
+3. **deploy.sh is pure container operations** — No secret generation, no OpenBao interaction, no `generate-secrets.sh`. Verifies env files exist (fails if Ansible didn't run). Sources libs from clone via `CLONE_DIR`.
+4. **deploy.sh + post-deploy.sh split** — deploy.sh handles infrastructure (clone upstream deps, pull/build images, start compose, wait for health). post-deploy.sh handles application (DB migrations, admin creation, OAuth2 registration, agent credentials). Independent retry.
+5. **Config-as-code** — Semaphore templates managed via `platform/semaphore/templates.yml` + `setup-templates.yml` (Ansible playbook). No ad-hoc API calls.
+
+### 4-Phase Composable Playbook Pattern
+
+Every `deploy-<service>.yml` follows this structure:
+
+```
+Phase 1: Sparse Checkout     → sparse-checkout.yml (clone ~/agent-cloud/ with minimal paths)
+Phase 2: Secrets + Runtime   → manage-secrets.yml (OpenBao → Jinja2 → env files)
+                             + setup-runtime-dir.yml (create ~/services/<name>/, symlinks)
+Phase 3: Container Ops       → run-deploy.yml (execute deploy.sh from runtime dir)
+Phase 4: Verify              → verify-health.yml (HTTP health check with retries)
+```
+
+**Variable contract:** `_monorepo_dir` (read-only clone), `_deploy_dir` (source code within clone), `_runtime_dir` (mutable working directory).
+
+### Composable Task Library
+
+| Task | Purpose | Status |
+|------|---------|--------|
+| `manage-secrets.yml` | Fetch/generate secrets from OpenBao, template env files | Implemented |
+| `manage-approle.yml` | Self-service AppRole + policy provisioning with TTL enforcement | Implemented |
+| `manage-diode-credentials.yml` | Create fresh Diode orb-agent credentials | Implemented |
+| `sparse-checkout.yml` | Sparse-clone monorepo with service-specific paths | Planned |
+| `setup-runtime-dir.yml` | Create `~/services/<name>/`, set up symlinks to clone | Planned |
+| `run-deploy.yml` | Execute deploy.sh from runtime dir with `CLONE_DIR` env var | Planned |
+| `verify-health.yml` | HTTP health check with retries and backoff | Planned |
+| `clean-service.yml` | Destroy containers, volumes, runtime dir, clone | Implemented |
+| `write-secret-metadata.yml` | Write KV v2 lifecycle metadata after secret store | Planned |
+| `rotate-credential.yml` | Generic Create→Verify→Retire rotation wrapper | Planned |
+| `revoke-service-credentials.yml` | Revoke AppRole secret_ids + Hydra clients | Planned |
+| `audit-credentials.yml` | Weekly credential inventory + stale detection | Planned |
+
+### Secret Lifecycle
+
+**First deploy:** `manage-secrets.yml` checks OpenBao (empty) → generates in Ansible memory → stores in OpenBao → templates env files to `~/services/<name>/` → deploy.sh starts containers using env files.
+
+**Subsequent deploys:** `manage-secrets.yml` checks OpenBao (has values) → reuses ALL existing secrets (no regeneration, no drift) → re-templates env files → deploy.sh restarts containers with matching passwords.
+
+**Credential rotation:** Create new credential → verify against live service → retire old credential. Dual-valid window with explicit verification gate. If verification fails, old credential remains active.
+
+### Credential Lifecycle Workflows
+
+| Workflow | Playbook | Schedule | Pattern |
+|----------|----------|----------|---------|
+| Rotate Diode Creds | `rotate-diode-credentials.yml` | Monthly | Create→Verify→Retire |
+| Rotate SSH Keys | `rotate-ssh-keys.yml` | Annual | Create→Verify→Retire |
+| Audit Credentials | `audit-credentials.yml` | Weekly | Read-only scan + report |
+
+### What deploy.sh Keeps vs What Moved to Ansible
+
+| Concern | deploy.sh | Ansible |
+|---------|-----------|---------|
+| Clone upstream repos | Yes | No |
+| Pull/build images | Yes | No |
+| Start/stop compose | Yes | No |
+| Wait for health | Yes | No |
+| DB migrations, admin users, OAuth2 | post-deploy.sh | No |
+| **Generate secrets** | **No** | **manage-secrets.yml** |
+| **Write env files** | **No** | **Jinja2 templates** |
+| **OpenBao read/write** | **No** | **community.hashi_vault** |
+| **Clone monorepo** | **No** | **sparse-checkout.yml** |
+| **Setup runtime dir** | **No** | **setup-runtime-dir.yml** |
+| **Health verification** | **No** | **verify-health.yml** |
+| **Credential rotation** | **No** | **rotate-credential.yml** |
+
+### Anti-Patterns
+
+- **No `secrets/` directory** on VMs — env files in `~/services/<name>/` only
+- **No `generate-secrets.sh`** — Ansible generates in memory
+- **No OpenBao calls from deploy.sh** — no `bao-client.sh`, no `BAO_ROLE_ID`
+- **No convenience symlinks** (`~/<service>` → clone) — use `~/services/<name>/` runtime dir
+- **No generated files in git clone** — all mutable files go to runtime dir
+- **No running deploy.sh from clone dir** — must run from `~/services/<name>/`
+- **No ad-hoc API calls** for Semaphore/OpenBao management — use config-as-code playbooks
+
+---
+
 ## Phase 1: NemoClaw Task Automation
 
 **Goal:** Transition NemoClaw from "deployed and connected" to actively performing useful work across all six service integrations, with consistent scheduling, logging, and alerting.
@@ -733,7 +933,7 @@ Auth: `Authorization: Bot <bot_token>` header, from OpenBao.
 - `#agent-activity` — task completions, sync summaries (info severity)
 - Store channel IDs in OpenBao at `secret/services/discord` (add fields: `alert_channel_id`, `activity_channel_id`)
 
-**n8n Alert Webhook:** A universal notification endpoint that accepts `{severity, service, message}` and routes to the appropriate Discord channel. All integrations call this webhook on failure.
+**n8n Alert Webhook:** A universal notification endpoint that accepts `{severity, service, message}` and routes to the appropriate Discord channel. All integrations call this webhook on failure. Webhook must require authentication (n8n header auth or network-restricted to NemoClaw's IP only) to prevent unauthorized triggering.
 
 **Daily Digest:** An n8n scheduled workflow that summarizes the day's `task_log` entries and posts to `#agent-activity`.
 
@@ -961,7 +1161,18 @@ When Phase 1 is complete, all of the following should be true:
 
 ## Trade-Off Analysis
 
-### n8n as Orchestrator vs. NemoClaw-Native Scheduling
+### Phase 0/0.5 Architecture Decisions
+
+| Decision | Chosen | Alternative | Rationale |
+|----------|--------|-------------|-----------|
+| OpenBao on own VM | Dedicated VM ({{ openbao_host }}) | Keep co-located with NocoDB | Independent failure domain; secrets backbone shouldn't depend on data service availability |
+| Ansible-native OpenBao access | `community.hashi_vault` lookup (supersedes `bao-client.sh` for deploy path) | Install OpenBao binary on each VM, or use `bao-client.sh` from deploy scripts | No OpenBao dependency on service VMs at all; Ansible handles auth natively. `bao-client.sh` retained in `platform/lib/` for edge cases |
+| Per-service AppRole | Separate role per service | Single shared role for all services | Least-privilege; compromise of one VM's credentials doesn't expose other services |
+| Proxmox REST API for VM creation | Direct curl wrapper (`pve-api.sh`) | Terraform provider or Ansible proxmox module | Simpler; no Terraform state to manage; matches existing script-based approach |
+| n8n API key: API first, DB fallback | Try REST API, fall back to direct DB insert | DB insert only | API is cleaner and version-stable; DB insert is the safety net if n8n version doesn't expose the endpoint |
+| Monorepo (agent-cloud) | Single public repo + site-config (private) | Separate repos per service (infra-automation, openbao) | Simpler git operations, single Semaphore project, atomic cross-service changes |
+
+### n8n as Orchestrator vs. NemoClaw-Native Scheduling (Phase 1)
 
 | Dimension | n8n Orchestration | NemoClaw Cron |
 |---|---|---|
@@ -972,7 +1183,7 @@ When Phase 1 is complete, all of the following should be true:
 
 **Decision:** Use n8n. Visibility and built-in error handling justify the dependency; n8n is already deployed.
 
-### NocoDB as Task Queue vs. Redis/RabbitMQ
+### NocoDB as Task Queue vs. Redis/RabbitMQ (Phase 1)
 
 | Dimension | NocoDB | Dedicated Queue |
 |---|---|---|
@@ -990,7 +1201,7 @@ When Phase 1 is complete, all of the following should be true:
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | OpenBao sealed after reboot | High | All services lose credential access | `unseal.sh` in VM startup scripts; auto-unseal with transit backend for production |
-| OpenBao VM failure | Medium | All services lose secret access | Raft snapshots + automated backup; services cache tokens locally in `secrets/` as fallback |
+| OpenBao VM failure | Medium | All services lose secret access | Raft snapshots + automated backup; running services continue with env files from last deploy (`~/services/<name>/.env`); no new deploys possible until OpenBao is restored |
 | NocoDB API token expiry | Medium | NemoClaw CRUD breaks | Monitor token health; OpenBao static role rotation in Phase 2 |
 | n8n API key endpoint unavailable | Medium | Programmatic bootstrap fails | DB insert fallback in deploy.sh; test endpoint availability per n8n version |
 | n8n workflow failure unnoticed | Medium | Scheduled tasks silently stop | n8n execution audit workflow every 6 hours |
@@ -1007,25 +1218,64 @@ When Phase 1 is complete, all of the following should be true:
 - All ports bound to `127.0.0.1`
 - Root token stored in file (not stdout), chmod 600
 - Shell injection prevented via array-based BAO command
-- AppRole TTL tightened to 30m/2h
+- AppRole token TTL tightened to 30m (default) / 2h (max) — this is the *post-login token lifetime*, not the secret_id validity
 - All secret files chmod 600, gitignored
 
 ### Addressed in Phase 0.5 (Per-VM Deployment)
 - **Per-service AppRole identities** — each VM gets its own role scoped to minimum required secret paths (no shared credentials). HCL policies: `nocodb-write`, `n8n-write`, `semaphore-write`
 - **HTTP-only OpenBao client** — service VMs use curl+jq wrapper (`bao-client.sh`), no OpenBao binary to maintain
 - **Programmatic token creation** — eliminates manual UI steps; tokens never pass through human clipboard
-- **AppRole credential distribution** — role_id + secret_id SCPed to each VM with chmod 600
+- **AppRole credential distribution** — AppRole credentials provisioned via `manage-approle.yml` and stored in OpenBao at `secret/services/approles/<name>`. Semaphore's orchestrator AppRole injected via environment JSON. No credential files on service VMs — Ansible authenticates natively via `community.hashi_vault`
 - **OpenBao on its own VM** — independent failure domain from data services
-- **Credentials via stdin** — `curl -d @-` and `--data-raw` instead of command-line `-d` args, preventing process list exposure
-- **SQL injection protection** — n8n DB fallback validates hex-only format before inserting generated API keys
-- **Cookie jar cleanup** — `trap EXIT INT TERM` ensures temp files with session cookies are removed on all exit paths
+- **Credentials via stdin** — deploy scripts use `curl -d @-` and `--data-raw` instead of inline `-d` args, preventing process list exposure. Note: some bootstrap examples in earlier design docs show inline args for illustration; the actual deploy scripts use the stdin pattern.
+- **SQL injection protection** — n8n DB fallback generates API keys via `openssl rand -hex 20` and validates the output matches `^[a-f0-9]{40}$` before SQL insertion, preventing injection via malformed key values
+- **Cookie jar cleanup** — `trap EXIT INT TERM` ensures temp files with session cookies (used by Semaphore and n8n cookie-based auth during bootstrap) are removed on all exit paths
 - **Unseal verification** — OpenBao deploy.sh verifies unseal succeeded before continuing
 
 ### Deferred to Production Hardening
-- **TLS on OpenBao** — currently `tls_disable=1`; enable on {{ openbao_host }} before production use. Self-signed CA acceptable for internal lab; distribute CA cert to all VMs
+
+#### TLS on OpenBao
+Currently `tls_disable=1`; enable on {{ openbao_host }} before production use. Migration steps:
+1. Generate self-signed CA + server cert for {{ openbao_host }}
+2. Distribute CA cert to all VMs via Ansible task
+3. Update `OPENBAO_ADDR` from `http://` to `https://` in all deploy scripts and `bao-client.sh`
+4. Add `--cacert /etc/openbao/ca.pem` to all curl calls in `bao-client.sh`
+5. Test all deploy scripts with TLS enabled
+6. Remove `tls_disable=1` from `openbao.hcl`
+
+Self-signed CA is acceptable for internal lab traffic. The `OPENBAO_ADDR` variable is the toggle — deploy scripts support both protocols without code changes.
+
+**Open question:** Enable TLS before or after remaining VM migrations? Recommendation: after all services are deployed (reduces variables during deployment troubleshooting), before Phase 1 NemoClaw automation goes live.
+
+#### Other Deferred Items
 - **Auto-unseal** — currently 1-of-1 Shamir; use transit auto-unseal or 3-of-5 threshold for production
-- **AppRole secret_id TTL** — currently 0 (never expires); set TTL + rotation schedule
-- **Root token rotation** — rotate after initial setup; use recovery tokens for break-glass
-- **NemoClaw network policy audit** — `access: full` on all endpoints; restrict to specific methods/paths
+- **AppRole secret_id TTL** — ✅ Resolved: `manage-approle.yml` enforces `secret_id_ttl: 2160h` (90 days) and `token_num_uses: 25` by default. Semaphore's orchestrator AppRole is the documented exception (unlimited uses). Rotation scheduling is a Semaphore-scheduled playbook responsibility.
+- **Root token revocation** — revoke root token after initial setup; generate recovery tokens for break-glass. Validation: `bao token lookup` with stored root token should return 403. Remove `secrets/init.json` from all hosts post-bootstrap.
+- **NemoClaw network policy audit** — `agent-cloud.yaml` currently grants `access: full` on all endpoints; restrict to specific HTTP methods and paths per service (e.g., NocoDB: GET/POST/PATCH/DELETE on data endpoints only, no admin APIs)
 - **Credential scoping** — verify minimum permissions per service token (read-only where possible)
-- **Proxmox API token scoping** — current token may have broad access; restrict to VM management operations only
+- **Proxmox API token scoping** — current token may have broad access; restrict to `PVEAuditor` role for monitoring, separate token for VM provisioning
+- **OpenBao audit logging** — enable audit device (`bao audit enable file file_path=/var/log/openbao/audit.log`) and forward to o11y stack (Loki). Critical for detecting unauthorized access patterns given NemoClaw's read-all policy.
+- **Service API token rotation** — NocoDB, n8n, Semaphore tokens are static and long-lived. Rotation follows the composable Create→Verify→Retire pattern via `rotate-credential.yml` (see Composable Automation Architecture section). Each service will need a service-specific `_create_tasks`/`_verify_tasks`/`_retire_tasks` implementation.
+- **OpenBao backup/DR** — Raft snapshots on schedule, stored on a separate VM from openbao. Document restore procedure and schedule periodic restore tests.
+- **Inter-VM network segmentation** — all VMs currently on same flat /24 subnet. Define expected inter-VM communication flows and consider pfSense/Proxmox firewall rules: e.g., NocoDB VM should not need direct access to Semaphore VM.
+- **n8n webhook authentication** — Phase 1 alert webhooks must require authentication (n8n header auth) or be network-restricted (only NemoClaw's IP) to prevent unauthorized workflow triggering.
+
+---
+
+## Open Questions
+
+Unresolved design decisions carried forward from architecture evaluation. These should be resolved before Phase 1 goes live.
+
+| # | Question | Context | Options | Status |
+|---|----------|---------|---------|--------|
+| 1 | NemoClaw AppRole distribution method | How should NemoClaw VM receive AppRole credentials on first boot? | (a) SCP/Ansible like other services, (b) cloud-init user-data for zero-touch provisioning | Open — cloud-init embeds secrets in VM config; SCP requires orchestrator access |
+| 2 | TLS timeline | When to enable OpenBao TLS relative to remaining VM deployments? | (a) Before remaining deploys (more secure), (b) After all services deployed (fewer variables) | Open — recommendation: after deploys, before Phase 1 |
+| 3 | NemoClaw network policy granularity | How far to restrict `access: full` on NemoClaw endpoints? | (a) Per-method/path restrictions, (b) IP-only restrictions, (c) Keep full access | Open — depends on whether NemoClaw's API client needs are fully mapped |
+
+### Resolved Questions
+
+| # | Question | Resolution | Date |
+|---|----------|-----------|------|
+| 1 | OpenBao VM IP | {{ openbao_host }} confirmed available, not in existing inventory | 2026-03-28 |
+| 2 | VM Template ID | VMID 9000, manual creation required (autoinstall serial console hang) | 2026-03-28 |
+| 3 | Monorepo vs. multi-repo | Consolidated to agent-cloud (public) + site-config (private); deprecated infra-automation and openbao repos | 2026-04-01 |
