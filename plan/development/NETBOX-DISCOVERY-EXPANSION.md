@@ -264,7 +264,7 @@ This keeps the template in one place while allowing per-environment customizatio
 | Prerequisite: Dedup strategy | Low (documentation) | Critical | — | PARTIAL — agent_name coded, not validated |
 | 1. pfSense REST API sync | Low (worker package) | Medium | Existing code | COMPLETE (2026-04-05) — orb-agent worker |
 | 2a. Proxmox API metadata | High (custom Python) | High | Dedup strategy | COMPLETE (2026-04-16) — 31 entities |
-| 2b. Proxmox guest IPs | Medium (API extension) | High | Phase 2a working | IN PROGRESS |
+| 2b. Proxmox guest IPs | Medium (API extension) | High | Phase 2a working | COMPLETE (2026-04-16) — 97 entities total |
 | 3. SNMPv3 upgrade | Medium (cred setup) | Medium | Phase 1 validated | TODO |
 | 4. LLDP topology | Low-Medium | Medium | Phase 1 or 2 working | OPTIONAL |
 
