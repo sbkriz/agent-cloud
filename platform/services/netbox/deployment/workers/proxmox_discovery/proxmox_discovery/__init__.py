@@ -3,8 +3,8 @@
 Queries the Proxmox REST API for cluster nodes, QEMU VMs, and LXC containers,
 then returns Diode entities for ingestion into NetBox.
 
-Phase 2a: Cluster metadata only (nodes, VMs, LXC with resource configs).
-Phase 2b (future): Guest agent network interfaces and IPs.
+Phase 2a: Cluster metadata (nodes, VMs, LXC with resource configs).
+Phase 2b: Guest agent network interfaces and IPs (nodes, VMs, LXC).
 
 Policy config expects:
   proxmox_url: Proxmox API URL (e.g. https://pve.example.com:8006)
@@ -37,6 +37,8 @@ from netboxlabs.diode.sdk.ingester import (
     DeviceRole,
     DeviceType,
     Entity,
+    Interface,
+    IPAddress,
     Manufacturer,
     Platform,
     Site,
@@ -46,6 +48,10 @@ from worker.models import Metadata, Policy
 
 MANUFACTURER = "Proxmox"
 PLATFORM = "Proxmox VE"
+
+# Interface types to skip (loopback, internal Proxmox bridges, etc.)
+_SKIP_IFACE_NAMES = {"lo"}
+_SKIP_IFACE_PREFIXES = ("fwbr", "fwln", "fwpr", "tap", "veth")
 
 
 def _int(val, default=0):
@@ -66,22 +72,51 @@ def _bytes_to_gb(b):
     return round(_int(b) / (1024 ** 3), 1)
 
 
-class ProxmoxDiscoveryBackend(_Backend):
-    """orb-agent worker backend for Proxmox VE API discovery.
+def _should_skip_iface(name):
+    """Skip loopback, firewall bridges, tap devices, and veth pairs."""
+    if not name:
+        return True
+    if name in _SKIP_IFACE_NAMES:
+        return True
+    if name.startswith(_SKIP_IFACE_PREFIXES):
+        return True
+    return False
 
-    Note on dedup: All orb-agent backends share the common agent_name
-    (netbox-discovery-agent). The app_name here maps to producer_app_name
-    in Diode, which tracks provenance but doesn't affect entity identity.
-    Dedup relies on entity uniqueness (device name + site). Validate after
-    deployment that no duplicate Devices are created.
-    """
+
+def _iface_type(name):
+    """Map interface name to NetBox interface type string."""
+    if name.startswith("vmbr"):
+        return "bridge"
+    if name.startswith("bond"):
+        return "lag"
+    if name.startswith(("vlan", ".")):
+        return "virtual"
+    if name.startswith("wg"):
+        return "virtual"
+    if name.startswith("eth") or name.startswith("en"):
+        return "other"
+    return "other"
+
+
+def _prefix_len(cidr):
+    """Extract prefix length from CIDR string, return None if invalid."""
+    if "/" in str(cidr):
+        try:
+            return int(str(cidr).split("/")[1])
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+class ProxmoxDiscoveryBackend(_Backend):
+    """orb-agent worker backend for Proxmox VE API discovery."""
 
     def setup(self) -> Metadata:
         return Metadata(
             name="proxmox-discovery",
             app_name="proxmox-discovery",
-            app_version="1.0.0",
-            description="Proxmox VE API → NetBox via Diode",
+            app_version="2.0.0",
+            description="Proxmox VE API → NetBox via Diode (nodes, VMs, LXC + interfaces/IPs)",
         )
 
     def run(self, policy_name: str, policy: Policy) -> Iterable[Entity]:
@@ -120,22 +155,14 @@ class ProxmoxDiscoveryBackend(_Backend):
             return []
 
     def _connect(self, url, token_id, api_token, verify_ssl):
-        """Create authenticated Proxmox API connection.
-
-        token_id format: 'user@realm!tokenname' (e.g. 'discovery@pve!netbox')
-        The proxmoxer library needs user and token_name split apart.
-        """
-        # Parse URL for host and port
-        # url might be https://192.168.1.10:8006 or https://pve.example.com
+        """Create authenticated Proxmox API connection."""
         parsed = urlparse(url)
         host = parsed.hostname
         port = parsed.port or 8006
 
-        # Split token_id: "user@realm!tokenname" → user="user@realm", token_name="tokenname"
         if "!" in token_id:
             user, token_name = token_id.split("!", 1)
         else:
-            # Fallback: treat entire string as user, no token name
             user = token_id
             token_name = "discovery"
 
@@ -158,7 +185,6 @@ class ProxmoxDiscoveryBackend(_Backend):
             node_name = node_data["node"]
             node_status = node_data.get("status", "unknown")
 
-            # --- Node as Device (role: hypervisor) ---
             node_entities = self._build_node(node_data, prox, site_name)
             entities.extend(node_entities)
 
@@ -169,42 +195,97 @@ class ProxmoxDiscoveryBackend(_Backend):
                 )
                 continue
 
-            # --- QEMU VMs on this node ---
+            # QEMU VMs
             try:
                 vms = prox.nodes(node_name).qemu.get()
                 for vm_data in vms:
-                    vm_entities = self._build_vm(
-                        vm_data, node_name, prox, site_name
-                    )
+                    vm_entities = self._build_vm(vm_data, node_name, prox, site_name)
                     entities.extend(vm_entities)
             except Exception as e:
-                print(
-                    f"[proxmox-discovery] WARNING: Failed to list VMs on {node_name}: {e}",
-                    file=sys.stderr,
-                )
+                print(f"[proxmox-discovery] WARNING: Failed to list VMs on {node_name}: {e}", file=sys.stderr)
 
-            # --- LXC containers on this node ---
+            # LXC containers
             try:
                 containers = prox.nodes(node_name).lxc.get()
                 for ct_data in containers:
-                    ct_entities = self._build_lxc(
-                        ct_data, node_name, prox, site_name
-                    )
+                    ct_entities = self._build_lxc(ct_data, node_name, prox, site_name)
                     entities.extend(ct_entities)
             except Exception as e:
-                print(
-                    f"[proxmox-discovery] WARNING: Failed to list LXC on {node_name}: {e}",
-                    file=sys.stderr,
-                )
+                print(f"[proxmox-discovery] WARNING: Failed to list LXC on {node_name}: {e}", file=sys.stderr)
 
         return entities
 
+    # ── Device reference helper ───────────────────────────────────
+
+    def _device_ref(self, name, site_name):
+        """Minimal Device reference for linking interfaces/IPs."""
+        return Device(
+            name=name,
+            device_type=DeviceType(
+                model="Proxmox",
+                manufacturer=Manufacturer(name=MANUFACTURER),
+            ),
+            site=Site(name=site_name),
+        )
+
+    # ── Interface + IP entity builder ─────────────────────────────
+
+    def _build_iface_entities(self, iface_name, device_ref, hw_addr=None, ips=None):
+        """Build Interface + IPAddress entities for one network interface.
+
+        Args:
+            iface_name: Interface name (e.g. eth0, vmbr0)
+            device_ref: Device reference for linking
+            hw_addr: MAC address (optional)
+            ips: List of dicts with 'address' and 'prefix' keys (optional)
+
+        Returns:
+            List of Entity objects
+        """
+        entities = []
+
+        if _should_skip_iface(iface_name):
+            return entities
+
+        iface = Interface(
+            name=iface_name,
+            device=device_ref,
+            type=_iface_type(iface_name),
+            enabled=True,
+            primary_mac_address=hw_addr if hw_addr else None,
+            description=f"Discovered via Proxmox API",
+        )
+        entities.append(Entity(interface=iface))
+
+        for ip_info in (ips or []):
+            addr = ip_info.get("address", "")
+            prefix = ip_info.get("prefix")
+            if not addr or not prefix:
+                continue
+            # Skip link-local and loopback
+            if addr.startswith("fe80:") or addr.startswith("127.") or addr == "::1":
+                continue
+
+            ip_entity = IPAddress(
+                address=f"{addr}/{prefix}",
+                assigned_object_interface=Interface(
+                    name=iface_name,
+                    device=device_ref,
+                ),
+                status="active",
+                description=f"{iface_name} on {device_ref.name}",
+            )
+            entities.append(Entity(ip_address=ip_entity))
+
+        return entities
+
+    # ── Node builder ──────────────────────────────────────────────
+
     def _build_node(self, node_data, prox, site_name):
-        """Build entities for a Proxmox cluster node."""
+        """Build entities for a Proxmox cluster node (device + interfaces + IPs)."""
         entities = []
         node_name = node_data["node"]
 
-        # Fetch detailed node status for hardware info
         cpu_model = "Unknown CPU"
         cpu_count = node_data.get("maxcpu", 0)
         mem_gb = _bytes_to_gb(node_data.get("maxmem", 0))
@@ -217,10 +298,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             cpu_count = cpu_info.get("cpus", cpu_count)
             pve_version = status.get("pveversion", "")
         except Exception as e:
-            print(
-                f"[proxmox-discovery] WARNING: Failed to get status for node {node_name}: {e}",
-                file=sys.stderr,
-            )
+            print(f"[proxmox-discovery] WARNING: Failed to get status for node {node_name}: {e}", file=sys.stderr)
 
         device = Device(
             name=node_name,
@@ -242,16 +320,49 @@ class ProxmoxDiscoveryBackend(_Backend):
         )
         entities.append(Entity(device=device))
 
+        # Phase 2b: Node network interfaces
+        if node_data.get("status") == "online":
+            device_ref = self._device_ref(node_name, site_name)
+            try:
+                network = prox.nodes(node_name).network.get()
+                for net in network:
+                    iface_name = net.get("iface", "")
+                    if _should_skip_iface(iface_name):
+                        continue
+
+                    ips = []
+                    # IPv4
+                    if net.get("address") and net.get("netmask"):
+                        prefix = self._netmask_to_prefix(net["netmask"])
+                        if prefix:
+                            ips.append({"address": net["address"], "prefix": prefix})
+                    # CIDR format (some Proxmox versions)
+                    if net.get("cidr"):
+                        cidr_prefix = _prefix_len(net["cidr"])
+                        addr = str(net["cidr"]).split("/")[0]
+                        if cidr_prefix and addr:
+                            ips.append({"address": addr, "prefix": cidr_prefix})
+                    # IPv6
+                    if net.get("address6") and net.get("netmask6"):
+                        ips.append({"address": net["address6"], "prefix": _int(net["netmask6"])})
+
+                    hw_addr = net.get("mac", None)
+                    iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
+                    entities.extend(iface_entities)
+            except Exception as e:
+                print(f"[proxmox-discovery] WARNING: Failed to get network for node {node_name}: {e}", file=sys.stderr)
+
         return entities
 
+    # ── VM builder ────────────────────────────────────────────────
+
     def _build_vm(self, vm_data, node_name, prox, site_name):
-        """Build entities for a QEMU virtual machine."""
+        """Build entities for a QEMU VM (device + guest agent interfaces + IPs)."""
         entities = []
         vmid = vm_data["vmid"]
         vm_name = vm_data.get("name", f"vm-{vmid}")
         vm_status = vm_data.get("status", "unknown")
 
-        # Map Proxmox status to NetBox status
         status_map = {
             "running": "active",
             "stopped": "offline",
@@ -259,9 +370,7 @@ class ProxmoxDiscoveryBackend(_Backend):
         }
         nb_status = status_map.get(vm_status, "offline")
 
-        # Get VM config for resource details
         cpu_count = vm_data.get("cpus", vm_data.get("maxcpu", 0))
-        # List endpoint returns maxmem in bytes; config endpoint returns memory in MiB
         raw_mem = vm_data.get("maxmem", 0)
         mem_gb = _bytes_to_gb(raw_mem) if raw_mem > 1024 * 1024 else _mb_to_gb(raw_mem)
 
@@ -292,10 +401,45 @@ class ProxmoxDiscoveryBackend(_Backend):
         )
         entities.append(Entity(device=device))
 
+        # Phase 2b: Guest agent network interfaces (only for running VMs)
+        if vm_status == "running":
+            device_ref = self._device_ref(vm_name, site_name)
+            try:
+                agent_ifaces = prox.nodes(node_name).qemu(vmid).agent("network-get-interfaces").get()
+                # Response is {"result": [{...}, ...]} or a list directly
+                iface_list = agent_ifaces.get("result", agent_ifaces) if isinstance(agent_ifaces, dict) else agent_ifaces
+
+                for agent_iface in iface_list:
+                    if not isinstance(agent_iface, dict):
+                        continue
+                    iface_name = agent_iface.get("name", "")
+                    hw_addr = agent_iface.get("hardware-address", None)
+
+                    ips = []
+                    for ip_info in agent_iface.get("ip-addresses", []):
+                        addr = ip_info.get("ip-address", "")
+                        prefix = _int(ip_info.get("prefix", 0))
+                        ip_type = ip_info.get("ip-address-type", "")
+                        if addr and prefix:
+                            ips.append({"address": addr, "prefix": prefix})
+
+                    iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
+                    entities.extend(iface_entities)
+
+            except Exception as e:
+                err_str = str(e)
+                # QEMU guest agent not running/installed — expected for some VMs
+                if "QEMU guest agent is not running" in err_str or "500" in err_str:
+                    pass  # Silent — many VMs don't have guest agent
+                else:
+                    print(f"[proxmox-discovery] DEBUG: No guest agent for VM {vm_name} ({vmid}): {e}", file=sys.stderr)
+
         return entities
 
+    # ── LXC builder ───────────────────────────────────────────────
+
     def _build_lxc(self, ct_data, node_name, prox, site_name):
-        """Build entities for an LXC container."""
+        """Build entities for an LXC container (device + interfaces + IPs)."""
         entities = []
         vmid = ct_data["vmid"]
         ct_name = ct_data.get("name", f"ct-{vmid}")
@@ -336,4 +480,50 @@ class ProxmoxDiscoveryBackend(_Backend):
         )
         entities.append(Entity(device=device))
 
+        # Phase 2b: LXC network interfaces (only for running containers)
+        if ct_status == "running":
+            device_ref = self._device_ref(ct_name, site_name)
+            try:
+                lxc_ifaces = prox.nodes(node_name).lxc(vmid).interfaces.get()
+
+                for lxc_iface in lxc_ifaces:
+                    if not isinstance(lxc_iface, dict):
+                        continue
+                    iface_name = lxc_iface.get("name", "")
+                    hw_addr = lxc_iface.get("hwaddr", None)
+
+                    ips = []
+                    # IPv4
+                    if lxc_iface.get("inet"):
+                        cidr = lxc_iface["inet"]
+                        prefix = _prefix_len(cidr)
+                        addr = str(cidr).split("/")[0]
+                        if addr and prefix:
+                            ips.append({"address": addr, "prefix": prefix})
+                    # IPv6
+                    if lxc_iface.get("inet6"):
+                        cidr6 = lxc_iface["inet6"]
+                        prefix6 = _prefix_len(cidr6)
+                        addr6 = str(cidr6).split("/")[0]
+                        if addr6 and prefix6:
+                            ips.append({"address": addr6, "prefix": prefix6})
+
+                    iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
+                    entities.extend(iface_entities)
+
+            except Exception as e:
+                print(f"[proxmox-discovery] DEBUG: Failed to get interfaces for LXC {ct_name} ({vmid}): {e}", file=sys.stderr)
+
         return entities
+
+    # ── Helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _netmask_to_prefix(netmask):
+        """Convert dotted netmask to prefix length (e.g. 255.255.255.0 → 24)."""
+        try:
+            parts = [int(x) for x in str(netmask).split(".")]
+            binary = "".join(f"{p:08b}" for p in parts)
+            return binary.count("1")
+        except (ValueError, AttributeError):
+            return None
