@@ -131,13 +131,6 @@ class PfSenseSyncBackend(_Backend):
 
     # ── Seed data helpers ────────────────────────────────────────
 
-    def _site(self):
-        """Site reference with optional Region nesting."""
-        kwargs = {"name": self._site_name}
-        if self._region_name:
-            kwargs["region"] = Region(name=self._region_name)
-        return Site(**kwargs)
-
     def _rack_or_none(self):
         """Rack reference with Location nesting, or None."""
         if not self._rack_name:
@@ -157,28 +150,55 @@ class PfSenseSyncBackend(_Backend):
         return Tenant(name=self._tenant_name)
 
     def _build_seed_entities(self):
-        """Emit standalone Region/Location/Rack/Tenant entities."""
+        """Emit standalone Region/Site/Location/Rack/Tenant entities.
+
+        NOTE: Diode rejects Device entities that nest Region inside Site.
+        The Site→Region link MUST be established via a standalone Site entity.
+        """
         entities = []
-        try:
-            if self._region_name:
+
+        if self._region_name:
+            try:
                 entities.append(Entity(region=Region(name=self._region_name)))
-            if self._location_name:
+            except Exception as e:
+                print(f"[pfsense-sync] WARNING: Failed to emit Region entity: {e}", file=sys.stderr)
+
+        if self._region_name:
+            try:
+                entities.append(Entity(site=Site(
+                    name=self._site_name,
+                    region=Region(name=self._region_name),
+                )))
+            except Exception as e:
+                print(f"[pfsense-sync] WARNING: Failed to emit Site→Region entity: {e}", file=sys.stderr)
+
+        if self._location_name:
+            try:
                 entities.append(Entity(location=Location(
                     name=self._location_name,
                     site=Site(name=self._site_name),
                 )))
-            if self._rack_name:
-                rack_kwargs = {"name": self._rack_name}
+            except Exception as e:
+                print(f"[pfsense-sync] WARNING: Failed to emit Location entity: {e}", file=sys.stderr)
+
+        if self._rack_name:
+            try:
+                rack_kwargs = {"name": self._rack_name, "site": Site(name=self._site_name)}
                 if self._location_name:
                     rack_kwargs["location"] = Location(
                         name=self._location_name,
                         site=Site(name=self._site_name),
                     )
                 entities.append(Entity(rack=Rack(**rack_kwargs)))
-            if self._tenant_name:
+            except Exception as e:
+                print(f"[pfsense-sync] WARNING: Failed to emit Rack entity: {e}", file=sys.stderr)
+
+        if self._tenant_name:
+            try:
                 entities.append(Entity(tenant=Tenant(name=self._tenant_name)))
-        except Exception as e:
-            print(f"[pfsense-sync] WARNING: Failed to build seed entities: {e}", file=sys.stderr)
+            except Exception as e:
+                print(f"[pfsense-sync] WARNING: Failed to emit Tenant entity: {e}", file=sys.stderr)
+
         return entities
 
     def _build_entities(self, pfsense, site_name, device_role):
@@ -216,7 +236,7 @@ class PfSenseSyncBackend(_Backend):
             role=DeviceRole(name=device_role),
         )
 
-        # Physical gateway — gets site (with region), rack, and tenant
+        # Physical gateway — gets rack and tenant (Region linked via standalone Site entity)
         device_kwargs = dict(
             name=device_name,
             device_type=DeviceType(
@@ -227,7 +247,7 @@ class PfSenseSyncBackend(_Backend):
                 name=platform_full,
                 manufacturer=Manufacturer(name=MANUFACTURER),
             ),
-            site=self._site(),
+            site=Site(name=site_name),
             role=DeviceRole(name=device_role),
             serial=serial,
             status="active",
