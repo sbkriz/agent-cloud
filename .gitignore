@@ -23,3 +23,7 @@ Thumbs.db
 .idea/
 *.code-workspace
 rexicon.txt
+
+# MemPalace (local AI memory tool)
+mempalace.yaml
+entities.json

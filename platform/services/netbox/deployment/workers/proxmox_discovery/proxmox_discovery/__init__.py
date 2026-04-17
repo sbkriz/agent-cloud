@@ -26,6 +26,7 @@ Example agent.yaml policy:
         api_token: "${vault://secret/services/discovery/proxmox_api/api_token}"
 """
 
+import socket
 import sys
 from collections.abc import Iterable
 from urllib.parse import urlparse
@@ -106,6 +107,19 @@ def _prefix_len(cidr):
         except (ValueError, IndexError):
             return None
     return None
+
+
+def _reverse_dns(ip, timeout=0.5):
+    """Attempt reverse DNS lookup. Returns hostname or empty string."""
+    old_timeout = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(timeout)
+        hostname, _, _ = socket.gethostbyaddr(ip)
+        return hostname
+    except (socket.herror, socket.gaierror, socket.timeout, OSError):
+        return ""
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
 
 class ProxmoxDiscoveryBackend(_Backend):
@@ -266,7 +280,8 @@ class ProxmoxDiscoveryBackend(_Backend):
             if addr.startswith("fe80:") or addr.startswith("127.") or addr == "::1":
                 continue
 
-            ip_entity = IPAddress(
+            dns_name = _reverse_dns(addr)
+            ip_kwargs = dict(
                 address=f"{addr}/{prefix}",
                 assigned_object_interface=Interface(
                     name=iface_name,
@@ -275,6 +290,9 @@ class ProxmoxDiscoveryBackend(_Backend):
                 status="active",
                 description=f"{iface_name} on {device_ref.name}",
             )
+            if dns_name:
+                ip_kwargs["dns_name"] = dns_name
+            ip_entity = IPAddress(**ip_kwargs)
             entities.append(Entity(ip_address=ip_entity))
 
         return entities
@@ -300,6 +318,13 @@ class ProxmoxDiscoveryBackend(_Backend):
         except Exception as e:
             print(f"[proxmox-discovery] WARNING: Failed to get status for node {node_name}: {e}", file=sys.stderr)
 
+        node_desc = ""
+        try:
+            node_config = prox.nodes(node_name).config.get()
+            node_desc = node_config.get("description", "")
+        except Exception:
+            pass
+
         device = Device(
             name=node_name,
             device_type=DeviceType(
@@ -313,6 +338,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             site=Site(name=site_name),
             role=DeviceRole(name="hypervisor"),
             status="active" if node_data.get("status") == "online" else "offline",
+            description=node_desc if node_desc else None,
             comments=(
                 f"Proxmox node. CPUs: {cpu_count}, RAM: {mem_gb} GiB. "
                 f"Discovered via Proxmox API."
@@ -374,8 +400,10 @@ class ProxmoxDiscoveryBackend(_Backend):
         raw_mem = vm_data.get("maxmem", 0)
         mem_gb = _bytes_to_gb(raw_mem) if raw_mem > 1024 * 1024 else _mb_to_gb(raw_mem)
 
+        vm_desc = ""
         try:
             config = prox.nodes(node_name).qemu(vmid).config.get()
+            vm_desc = config.get("description", "")
             cpu_count = _int(config.get("cores", cpu_count), cpu_count)
             sockets = _int(config.get("sockets", 1), 1)
             cpu_count = cpu_count * sockets
@@ -393,6 +421,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             site=Site(name=site_name),
             role=DeviceRole(name="server"),
             status=nb_status,
+            description=vm_desc if vm_desc else None,
             comments=(
                 f"VMID: {vmid}. Host: {node_name}. "
                 f"vCPUs: {cpu_count}, RAM: {mem_gb} GiB. "
@@ -455,8 +484,10 @@ class ProxmoxDiscoveryBackend(_Backend):
         raw_mem = ct_data.get("maxmem", 0)
         mem_gb = _bytes_to_gb(raw_mem) if raw_mem > 1024 * 1024 else _mb_to_gb(raw_mem)
 
+        ct_desc = ""
         try:
             config = prox.nodes(node_name).lxc(vmid).config.get()
+            ct_desc = config.get("description", "")
             cpu_count = _int(config.get("cores", cpu_count), cpu_count)
             if "memory" in config:
                 mem_gb = _mb_to_gb(config["memory"])
@@ -472,6 +503,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             site=Site(name=site_name),
             role=DeviceRole(name="container"),
             status=nb_status,
+            description=ct_desc if ct_desc else None,
             comments=(
                 f"VMID: {vmid}. Host: {node_name}. "
                 f"vCPUs: {cpu_count}, RAM: {mem_gb} GiB. "

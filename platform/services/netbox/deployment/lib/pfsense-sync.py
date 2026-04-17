@@ -321,39 +321,9 @@ def build_entities(pfsense):
     except Exception as e:
         print(f"  WARNING: Failed to fetch gateways: {e}", file=sys.stderr)
 
-    # ── ARP table ────────────────────────────────────────────────
-    try:
-        arp_entries = pfsense.get_arp_table()
-        if isinstance(arp_entries, dict):
-            arp_entries = list(arp_entries.values())
-
-        arp_count = 0
-        for entry in arp_entries:
-            if not isinstance(entry, dict):
-                continue
-            # /diagnostics/arp_table fields: ip_address, mac_address, interface, hostname
-            ip = entry.get("ip_address", "")
-            if ip and "/" not in ip:
-                ip = f"{ip}/32"
-            if ip:
-                mac = entry.get("mac_address", "")
-                iface = entry.get("interface", "")
-                arp_host = entry.get("hostname", "")
-                desc_parts = [f"ARP: {mac}" if mac else "ARP"]
-                if iface:
-                    desc_parts.append(f"on {iface}")
-                if arp_host:
-                    desc_parts.append(f"({arp_host})")
-                ip_entity = IPAddress(
-                    address=ip,
-                    status="active",
-                    description=" ".join(desc_parts),
-                )
-                entities.append(Entity(ip_address=ip_entity))
-                arp_count += 1
-        print(f"  ARP entries: {arp_count}")
-    except Exception as e:
-        print(f"  WARNING: Failed to fetch ARP table: {e}", file=sys.stderr)
+    # ARP table entity creation REMOVED (Phase A cleanup).
+    # ARP entries created /32 IPs that conflicted with interface IPs
+    # discovered with proper prefix lengths, causing duplicates in NetBox.
 
     return entities
 

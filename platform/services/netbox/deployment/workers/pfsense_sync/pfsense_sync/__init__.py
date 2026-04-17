@@ -1,7 +1,7 @@
 """pfSense REST API → NetBox Diode worker for orb-agent.
 
 Queries the pfSense REST API (pfrest v2) for device, interface, IP address,
-ARP, and gateway data, then returns Diode entities for ingestion.
+and gateway data, then returns Diode entities for ingestion.
 
 Policy config expects:
   pfsense_host: hostname:port (or from vault)
@@ -81,10 +81,6 @@ class PfSenseClient:
 
     def get_gateway_status(self):
         return self._get("/status/gateways")
-
-    def get_arp_table(self):
-        return self._get("/diagnostics/arp_table")
-
 
 class PfSenseSyncBackend(_Backend):
     """orb-agent worker backend for pfSense REST API sync."""
@@ -246,40 +242,28 @@ class PfSenseSyncBackend(_Backend):
                     continue
                 gw_ip = gw.get("gateway", "")
                 gw_name = gw.get("name", "")
+                is_default = gw.get("defaultgw")
 
                 # Resolve "dynamic" gateways from live status
                 if gw_ip in ("dynamic", "") and gw_name in gw_status_map:
                     gw_ip = gw_status_map[gw_name].get("srcip", "")
 
                 if gw_ip and gw_ip not in ("dynamic", ""):
-                    ip_entity = IPAddress(
+                    ip_kwargs = dict(
                         address=f"{gw_ip}/32",
                         status="active",
                         description=f"Gateway: {gw_name} ({gw.get('interface', '')})",
                     )
+                    if is_default:
+                        ip_kwargs["role"] = "vip"
+                    ip_entity = IPAddress(**ip_kwargs)
                     entities.append(Entity(ip_address=ip_entity))
 
         except Exception as e:
             print(f"[pfsense-sync] WARNING: Failed to fetch gateways: {e}", file=sys.stderr)
 
-        # ARP table as IP addresses
-        try:
-            arp_entries = pfsense.get_arp_table()
-            if isinstance(arp_entries, dict):
-                arp_entries = list(arp_entries.values())
-            if isinstance(arp_entries, list):
-                for entry in arp_entries:
-                    if not isinstance(entry, dict):
-                        continue
-                    ip = entry.get("ip", "")
-                    if ip:
-                        ip_entity = IPAddress(
-                            address=f"{ip}/32",
-                            status="active",
-                            description=f"ARP: {entry.get('mac', '')} on {entry.get('interface', '')}",
-                        )
-                        entities.append(Entity(ip_address=ip_entity))
-        except Exception as e:
-            print(f"[pfsense-sync] WARNING: Failed to fetch ARP table: {e}", file=sys.stderr)
+        # ARP table entity creation REMOVED (Phase A cleanup).
+        # ARP entries created /32 IPs that conflicted with interface IPs
+        # discovered with proper prefix lengths, causing duplicates in NetBox.
 
         return entities

@@ -65,6 +65,9 @@ templates:
   - name: Seed Discovery Credentials
     playbook: platform/playbooks/seed-discovery-credentials.yml
 
+  - name: Update Proxmox Token
+    playbook: platform/playbooks/update-proxmox-token.yml
+
   - name: Sync Secrets to OpenBao
     playbook: platform/playbooks/sync-secrets-to-openbao.yml
 
