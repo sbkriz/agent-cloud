@@ -2,28 +2,31 @@
 # cleanup-netbox-duplicates.yml — Remove duplicate devices and stale seed data
 # Created to fix duplication caused by missing template vars in Semaphore inventory.
 # Safe to re-run: all operations are idempotent (no-op if duplicates already removed).
+#
+# Uses ansible.builtin.shell with heredoc to pipe multi-line Python scripts
+# to Django's manage.py shell (command module + >- mangles for loops).
 
 - name: "Cleanup NetBox Duplicate Devices & Stale Seed Data"
   hosts: netbox_svc
   gather_facts: false
   tasks:
     - name: Show current state before cleanup
-      ansible.builtin.command:
-        cmd: >-
-          docker exec netbox-netbox-1
-          /opt/netbox/netbox/manage.py shell -c
-          "from dcim.models import Device, Region, Rack, Site;
-          from tenancy.models import Tenant;
-          from django.db.models import Count;
-          dupes = Device.objects.values('name').annotate(c=Count('id')).filter(c__gt=1);
-          print(f'Total devices: {Device.objects.count()}');
-          print(f'Duplicate device names: {dupes.count()}');
-          for d in dupes:
-              print(f'  {d[\"name\"]} x{d[\"c\"]}');
-          print(f'Regions: {list(Region.objects.values_list(\"name\", flat=True))}');
-          print(f'Racks: {list(Rack.objects.values_list(\"name\", flat=True))}');
-          print(f'Devices with tenant: {Device.objects.exclude(tenant__isnull=True).count()}');
-          print(f'Devices without tenant: {Device.objects.filter(tenant__isnull=True).count()}')"
+      ansible.builtin.shell: |
+        docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell << 'PYSCRIPT'
+        from dcim.models import Device, Region, Rack, Site
+        from tenancy.models import Tenant
+        from django.db.models import Count
+
+        dupes = Device.objects.values('name').annotate(c=Count('id')).filter(c__gt=1)
+        print(f'Total devices: {Device.objects.count()}')
+        print(f'Duplicate device names: {dupes.count()}')
+        for d in dupes:
+            print(f'  {d["name"]} x{d["c"]}')
+        print(f'Regions: {list(Region.objects.values_list("name", flat=True))}')
+        print(f'Racks: {list(Rack.objects.values_list("name", flat=True))}')
+        print(f'Devices with tenant: {Device.objects.exclude(tenant__isnull=True).count()}')
+        print(f'Devices without tenant: {Device.objects.filter(tenant__isnull=True).count()}')
+        PYSCRIPT
       register: _pre_state
       changed_when: false
 
@@ -32,29 +35,29 @@
         msg: "{{ _pre_state.stdout_lines | default([]) }}"
 
     - name: Delete duplicate devices (keep tenanted original, remove untenanted copy)
-      ansible.builtin.command:
-        cmd: >-
-          docker exec netbox-netbox-1
-          /opt/netbox/netbox/manage.py shell -c
-          "from dcim.models import Device;
-          from django.db.models import Count;
-          dupes = Device.objects.values('name').annotate(c=Count('id')).filter(c__gt=1);
-          deleted = 0;
-          for entry in dupes:
-              name = entry['name'];
-              devices = list(Device.objects.filter(name=name).order_by('id'));
-              with_tenant = [d for d in devices if d.tenant];
-              if with_tenant:
-                  keep = with_tenant[0];
-              else:
-                  keep = devices[0];
-              for d in devices:
-                  if d.id != keep.id:
-                      print(f'DELETE: {d.name} (id={d.id} tenant={d.tenant} rack={d.rack})');
-                      d.delete();
-                      deleted += 1;
-          print(f'Deleted {deleted} duplicate devices');
-          print(f'Remaining devices: {Device.objects.count()}')"
+      ansible.builtin.shell: |
+        docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell << 'PYSCRIPT'
+        from dcim.models import Device
+        from django.db.models import Count
+
+        dupes = Device.objects.values('name').annotate(c=Count('id')).filter(c__gt=1)
+        deleted = 0
+        for entry in dupes:
+            name = entry['name']
+            devices = list(Device.objects.filter(name=name).order_by('id'))
+            with_tenant = [d for d in devices if d.tenant]
+            if with_tenant:
+                keep = with_tenant[0]
+            else:
+                keep = devices[0]
+            for d in devices:
+                if d.id != keep.id:
+                    print(f'DELETE: {d.name} (id={d.id} tenant={d.tenant} rack={d.rack})')
+                    d.delete()
+                    deleted += 1
+        print(f'Deleted {deleted} duplicate devices')
+        print(f'Remaining devices: {Device.objects.count()}')
+        PYSCRIPT
       register: _delete_dupes
       changed_when: "'Deleted 0' not in _delete_dupes.stdout"
 
@@ -63,20 +66,20 @@
         msg: "{{ _delete_dupes.stdout_lines | default([]) }}"
 
     - name: Delete stale 'uhstray' device (replaced by uhstray.pfsense.lan FQDN)
-      ansible.builtin.command:
-        cmd: >-
-          docker exec netbox-netbox-1
-          /opt/netbox/netbox/manage.py shell -c
-          "from dcim.models import Device;
-          fqdn_exists = Device.objects.filter(name='uhstray.pfsense.lan').exists();
-          old = Device.objects.filter(name='uhstray');
-          if fqdn_exists and old.exists():
-              print(f'DELETE: uhstray (id={old.first().id}) — replaced by uhstray.pfsense.lan');
-              old.delete();
-          elif not fqdn_exists:
-              print('SKIP: uhstray.pfsense.lan not found, keeping uhstray');
-          else:
-              print('SKIP: uhstray already removed')"
+      ansible.builtin.shell: |
+        docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell << 'PYSCRIPT'
+        from dcim.models import Device
+
+        fqdn_exists = Device.objects.filter(name='uhstray.pfsense.lan').exists()
+        old = Device.objects.filter(name='uhstray')
+        if fqdn_exists and old.exists():
+            print(f'DELETE: uhstray (id={old.first().id}) — replaced by uhstray.pfsense.lan')
+            old.delete()
+        elif not fqdn_exists:
+            print('SKIP: uhstray.pfsense.lan not found, keeping uhstray')
+        else:
+            print('SKIP: uhstray already removed')
+        PYSCRIPT
       register: _delete_uhstray
       changed_when: "'DELETE:' in _delete_uhstray.stdout"
 
@@ -85,30 +88,31 @@
         msg: "{{ _delete_uhstray.stdout_lines | default([]) }}"
 
     - name: Re-link site to US East region and delete Home Lab
-      ansible.builtin.command:
-        cmd: >-
-          docker exec netbox-netbox-1
-          /opt/netbox/netbox/manage.py shell -c
-          "from dcim.models import Region, Site;
-          us_east = Region.objects.filter(name='US East').first();
-          site = Site.objects.filter(name='Uhstray.io Datacenter').first();
-          if us_east and site and site.region != us_east:
-              old_region_name = site.region.name if site.region else 'none';
-              site.region = us_east;
-              site.save();
-              print(f'UPDATED: Site region {old_region_name} -> US East');
-          elif site and site.region == us_east:
-              print('SKIP: Site already linked to US East');
-          else:
-              print('SKIP: US East region or site not found');
-          home_lab = Region.objects.filter(name='Home Lab');
-          if home_lab.exists():
-              sites_using = Site.objects.filter(region__name='Home Lab').count();
-              if sites_using == 0:
-                  print('DELETE: Home Lab region (no sites reference it)');
-                  home_lab.delete();
-              else:
-                  print(f'SKIP: Home Lab still has {sites_using} site(s)')"
+      ansible.builtin.shell: |
+        docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell << 'PYSCRIPT'
+        from dcim.models import Region, Site
+
+        us_east = Region.objects.filter(name='US East').first()
+        site = Site.objects.filter(name='Uhstray.io Datacenter').first()
+        if us_east and site and site.region != us_east:
+            old_region_name = site.region.name if site.region else 'none'
+            site.region = us_east
+            site.save()
+            print(f'UPDATED: Site region {old_region_name} -> US East')
+        elif site and site.region == us_east:
+            print('SKIP: Site already linked to US East')
+        else:
+            print('SKIP: US East region or site not found')
+
+        home_lab = Region.objects.filter(name='Home Lab')
+        if home_lab.exists():
+            sites_using = Site.objects.filter(region__name='Home Lab').count()
+            if sites_using == 0:
+                print('DELETE: Home Lab region (no sites reference it)')
+                home_lab.delete()
+            else:
+                print(f'SKIP: Home Lab still has {sites_using} site(s)')
+        PYSCRIPT
       register: _fix_region
       changed_when: "'UPDATED:' in _fix_region.stdout or 'DELETE:' in _fix_region.stdout"
 
@@ -117,21 +121,21 @@
         msg: "{{ _fix_region.stdout_lines | default([]) }}"
 
     - name: Delete stale Main Rack (if no devices reference it)
-      ansible.builtin.command:
-        cmd: >-
-          docker exec netbox-netbox-1
-          /opt/netbox/netbox/manage.py shell -c
-          "from dcim.models import Rack, Device;
-          main_rack = Rack.objects.filter(name='Main Rack');
-          if main_rack.exists():
-              devices_in_rack = Device.objects.filter(rack__name='Main Rack').count();
-              if devices_in_rack == 0:
-                  print('DELETE: Main Rack (no devices reference it)');
-                  main_rack.delete();
-              else:
-                  print(f'SKIP: Main Rack still has {devices_in_rack} device(s)');
-          else:
-              print('SKIP: Main Rack already removed')"
+      ansible.builtin.shell: |
+        docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell << 'PYSCRIPT'
+        from dcim.models import Rack, Device
+
+        main_rack = Rack.objects.filter(name='Main Rack')
+        if main_rack.exists():
+            devices_in_rack = Device.objects.filter(rack__name='Main Rack').count()
+            if devices_in_rack == 0:
+                print('DELETE: Main Rack (no devices reference it)')
+                main_rack.delete()
+            else:
+                print(f'SKIP: Main Rack still has {devices_in_rack} device(s)')
+        else:
+            print('SKIP: Main Rack already removed')
+        PYSCRIPT
       register: _delete_rack
       changed_when: "'DELETE:' in _delete_rack.stdout"
 
@@ -140,27 +144,31 @@
         msg: "{{ _delete_rack.stdout_lines | default([]) }}"
 
     - name: Show final state after cleanup
-      ansible.builtin.command:
-        cmd: >-
-          docker exec netbox-netbox-1
-          /opt/netbox/netbox/manage.py shell -c
-          "from dcim.models import Device, Region, Rack, Site, Location;
-          from tenancy.models import Tenant;
-          print('=== Post-Cleanup State ===');
-          print(f'Devices: {Device.objects.count()}');
-          regions = Region.objects.all();
-          print(f'Regions: {regions.count()}');
-          [print(f'  {r.name}') for r in regions];
-          sites = Site.objects.all();
-          [print(f'Site: {s.name}  region={s.region.name if s.region else \"(none)\"}  lat={s.latitude}  lon={s.longitude}') for s in sites];
-          racks = Rack.objects.all();
-          print(f'Racks: {racks.count()}');
-          [print(f'  {r.name}  location={r.location.name if r.location else \"(none)\"}') for r in racks];
-          racked = Device.objects.exclude(rack__isnull=True);
-          print(f'Devices with rack: {racked.count()}');
-          [print(f'  {d.name}  rack={d.rack.name}') for d in racked];
-          tenanted = Device.objects.exclude(tenant__isnull=True);
-          print(f'Devices with tenant: {tenanted.count()}')"
+      ansible.builtin.shell: |
+        docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell << 'PYSCRIPT'
+        from dcim.models import Device, Region, Rack, Site, Location
+        from tenancy.models import Tenant
+
+        print('=== Post-Cleanup State ===')
+        print(f'Devices: {Device.objects.count()}')
+        regions = Region.objects.all()
+        print(f'Regions: {regions.count()}')
+        for r in regions:
+            print(f'  {r.name}')
+        sites = Site.objects.all()
+        for s in sites:
+            print(f'Site: {s.name}  region={s.region.name if s.region else "(none)"}  lat={s.latitude}  lon={s.longitude}')
+        racks = Rack.objects.all()
+        print(f'Racks: {racks.count()}')
+        for r in racks:
+            print(f'  {r.name}  location={r.location.name if r.location else "(none)"}')
+        racked = Device.objects.exclude(rack__isnull=True)
+        print(f'Devices with rack: {racked.count()}')
+        for d in racked:
+            print(f'  {d.name}  rack={d.rack.name}')
+        tenanted = Device.objects.exclude(tenant__isnull=True)
+        print(f'Devices with tenant: {tenanted.count()}')
+        PYSCRIPT
       register: _post_state
       changed_when: false
 
