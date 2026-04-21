@@ -40,6 +40,7 @@ Each service runs on its own VM, provisioned via the Proxmox API on aurora ({{ p
 | `semaphore` | 117 | `{{ semaphore_host }}` | Semaphore + Postgres | 3000 | Podman | 2 | 2 GB | 20 GB |
 | `nemoclaw` | 163 | `{{ nemoclaw_host }}` | NemoClaw + OpenShell | — | Docker | 4 | 8 GB | 60 GB |
 | `netbox` | 116 | `{{ netbox_host }}` | NetBox + Diode Pipeline | 8000 | Podman | 2 | 4 GB | 40 GB |
+| `harbor` | TBD | `{{ harbor_host }}` | Harbor Registry | 443 | Docker | 4 | 8 GB | 100 GB |
 
 All VMs are cloned from template VMID 9000 (Ubuntu 24.04 cloud-init) on the Proxmox cluster. VM placement is determined at provisioning time by cluster load; default target node is aurora. Resource specs are defined in `proxmox/vm-specs.yml`.
 
@@ -1506,9 +1507,9 @@ When Phase 1 is complete, all of the following should be true:
 **Registry:** [Harbor](https://goharbor.io/) ([goharbor/harbor](https://github.com/goharbor/harbor)) — CNCF graduated, supports vulnerability scanning, Helm charts, image replication, and OCI artifacts.
 
 **Deployment:**
-- Deploy Harbor on a Proxmox VM (compose-based), add to `platform/services/harbor/deployment/`
+- Deploy Harbor on a Proxmox VM (Docker compose — Harbor's installer requires Docker), add to `platform/services/harbor/deployment/`
+- Set `container_engine: docker` in site-config inventory for the Harbor host
 - Integrate with OpenBao for admin credentials and robot account tokens
-- Semaphore templates: deploy-harbor, update-harbor, clean-deploy-harbor
 - RBAC: push = CI/Semaphore only, pull = all cluster nodes and VMs
 
 **Image Promotion Pipeline (dev → QA → prod):**
@@ -1531,7 +1532,7 @@ All custom images follow a three-stage promotion model. Images are never rebuilt
 │  ──────────────────────────                                         │
 │  1. Semaphore builds image from merged code                         │
 │  2. Tag: <image>:qa-<version>  (semver or date-based)               │
-│  3. Push to Harbor project: harbor.lan/qa/<image>:<tag>             │
+│  3. Push to Harbor project: {{ harbor_host }}/qa/<image>:<tag>             │
 │  4. Deploy to QA environment using Harbor image                     │
 │  5. Run automated validation (health checks, integration tests)     │
 │  6. Manual approval gate (if required)                              │
@@ -1541,9 +1542,9 @@ All custom images follow a three-stage promotion model. Images are never rebuilt
 ┌─────────────────────────────────────────────────────────────────────┐
 │  PROD (Semaphore deploy pipeline)                                   │
 │  ────────────────────────────────                                   │
-│  1. Retag QA image: harbor.lan/prod/<image>:<version>               │
-│  2. Deploy via Semaphore using the harbor.lan/prod/ image           │
-│  3. Compose/k8s manifests pin to harbor.lan/prod/<image>:<version>  │
+│  1. Retag QA image: {{ harbor_host }}/prod/<image>:<version>               │
+│  2. Deploy via Semaphore using the {{ harbor_host }}/prod/ image           │
+│  3. Compose/k8s manifests pin to {{ harbor_host }}/prod/<image>:<version>  │
 │  4. Post-deploy validation (health checks, service verify)          │
 │  5. Previous prod image retained for rollback                       │
 └─────────────────────────────────────────────────────────────────────┘
@@ -1572,11 +1573,12 @@ All custom images follow a three-stage promotion model. Images are never rebuilt
 
 **Vulnerability scanning:** Harbor's built-in Trivy scanner runs on every push. Images with critical CVEs are blocked from promotion to `prod/`.
 
-**Semaphore integration:**
-- `build-and-push-image.yml` — Build image, tag, push to `harbor.lan/qa/`
-- `promote-image.yml` — Retag from `qa/` → `prod/`, no rebuild
-- `deploy-harbor.yml` — Deploy/update Harbor itself
-- Existing `deploy-*.yml` playbooks updated to pull from `harbor.lan/prod/` instead of building locally
+**Semaphore playbooks (to create):**
+- [ ] `deploy-harbor.yml` — Deploy/update Harbor itself (follows composable pattern)
+- [ ] `build-and-push-image.yml` — Build image, tag, push to `{{ harbor_host }}/qa/`
+- [ ] `promote-image.yml` — Retag from `qa/` → `prod/`, no rebuild
+- [ ] Update existing `deploy-*.yml` playbooks to pull from `{{ harbor_host }}/prod/` instead of building locally
+- [ ] Add Semaphore templates to `platform/semaphore/templates.yml`: deploy-harbor, update-harbor, clean-deploy-harbor, build-and-push-image, promote-image
 
 ### 3C. Kubernetes Foundation
 
