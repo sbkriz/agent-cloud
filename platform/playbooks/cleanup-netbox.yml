@@ -1,0 +1,341 @@
+---
+# cleanup-netbox.yml — Generic NetBox cleanup for Diode-created orphans
+#
+# Diode is additive-only: it creates and updates but never deletes.
+# Config renames, version bumps, or template var changes create orphaned
+# objects. This playbook provides parameterized cleanup operations.
+#
+# All operations default to off. Enable via extra vars (-e):
+#
+#   Dry run (always run first):
+#     -e dry_run=true                              # shows what WOULD happen
+#
+#   Remove duplicate devices:
+#     -e cleanup_duplicates=true
+#     -e duplicate_strategy=tenant                  # tenant (default), lowest_id, highest_id
+#
+#   Replace a renamed device:
+#     -e replace_device_old=uhstray -e replace_device_new=uhstray.pfsense.lan
+#
+#   Migrate site to a different region:
+#     -e migrate_region_old="Home Lab" -e migrate_region_new="US East"
+#
+#   Migrate devices from one rack to another:
+#     -e migrate_rack_old="Main Rack" -e migrate_rack_new="Server Rack"
+#
+#   Delete orphaned objects (regions/racks/locations with 0 references):
+#     -e delete_orphans=true
+#
+# Semaphore: Template 57 — pass extra vars via CLI args field.
+# Safe to re-run: all operations are idempotent.
+
+- name: "Cleanup NetBox Objects"
+  hosts: netbox_svc
+  gather_facts: false
+  vars:
+    dry_run: true
+    cleanup_duplicates: false
+    duplicate_strategy: "tenant"
+    replace_device_old: ""
+    replace_device_new: ""
+    migrate_region_old: ""
+    migrate_region_new: ""
+    migrate_rack_old: ""
+    migrate_rack_new: ""
+    delete_orphans: false
+    _manage: "docker exec -i netbox-netbox-1 /opt/netbox/netbox/manage.py shell"
+
+  tasks:
+    # ── Snapshot ────────────────────────────────────────────────
+    - name: NetBox state snapshot
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from dcim.models import Device, Region, Rack, Site, Location
+        from tenancy.models import Tenant
+        from django.db.models import Count
+
+        print('=== NetBox State ===')
+        print(f'Devices: {Device.objects.count()}')
+        dupes = Device.objects.values('name').annotate(c=Count('id')).filter(c__gt=1)
+        print(f'Duplicate device names: {dupes.count()}')
+        for d in dupes:
+            print(f'  {d["name"]} x{d["c"]}')
+
+        print(f'Regions: {list(Region.objects.values_list("name", flat=True))}')
+        sites = Site.objects.all()
+        for s in sites:
+            print(f'Site: {s.name}  region={s.region.name if s.region else "(none)"}')
+        print(f'Locations: {list(Location.objects.values_list("name", flat=True))}')
+        print(f'Racks: {list(Rack.objects.values_list("name", flat=True))}')
+        print(f'Tenants: {list(Tenant.objects.values_list("name", flat=True))}')
+
+        print(f'Devices with rack: {Device.objects.exclude(rack__isnull=True).count()}')
+        print(f'Devices with tenant: {Device.objects.exclude(tenant__isnull=True).count()}')
+        print(f'Devices without tenant: {Device.objects.filter(tenant__isnull=True).count()}')
+        PYSCRIPT
+      register: _snapshot
+      changed_when: false
+
+    - name: Show snapshot
+      ansible.builtin.debug:
+        msg: "{{ _snapshot.stdout_lines | default([]) }}"
+
+    - name: Dry-run mode active
+      ansible.builtin.debug:
+        msg: "DRY RUN — no changes will be made. Re-run with -e dry_run=false to apply."
+      when: dry_run | bool
+
+    # ── Cleanup Duplicates ──────────────────────────────────────
+    - name: "Cleanup duplicate devices (strategy: {{ duplicate_strategy }})"
+      ansible.builtin.shell: |
+        {{ _manage }} << PYSCRIPT
+        from dcim.models import Device
+        from django.db.models import Count
+
+        DRY = {{ dry_run | bool | lower }}
+        STRATEGY = '{{ duplicate_strategy }}'
+
+        dupes = Device.objects.values('name').annotate(c=Count('id')).filter(c__gt=1)
+        deleted = 0
+        for entry in dupes:
+            name = entry['name']
+            devices = list(Device.objects.filter(name=name).order_by('id'))
+
+            if STRATEGY == 'tenant':
+                with_tenant = [d for d in devices if d.tenant]
+                keep = with_tenant[0] if with_tenant else devices[0]
+            elif STRATEGY == 'highest_id':
+                keep = devices[-1]
+            else:
+                keep = devices[0]
+
+            for d in devices:
+                if d.id != keep.id:
+                    action = 'WOULD DELETE' if DRY else 'DELETE'
+                    print(f'{action}: {d.name} (id={d.id} tenant={d.tenant} rack={d.rack})')
+                    if not DRY:
+                        d.delete()
+                    deleted += 1
+
+        verb = 'Would delete' if DRY else 'Deleted'
+        print(f'{verb} {deleted} duplicate devices')
+        if not DRY:
+            print(f'Remaining devices: {Device.objects.count()}')
+        PYSCRIPT
+      register: _dupes_result
+      when: cleanup_duplicates | bool
+      changed_when: "not (dry_run | bool) and 'Deleted 0' not in _dupes_result.stdout"
+
+    - name: Duplicate cleanup results
+      ansible.builtin.debug:
+        msg: "{{ _dupes_result.stdout_lines | default([]) }}"
+      when: cleanup_duplicates | bool
+
+    # ── Replace Device ──────────────────────────────────────────
+    - name: "Replace device '{{ replace_device_old }}' → '{{ replace_device_new }}'"
+      ansible.builtin.shell: |
+        {{ _manage }} << PYSCRIPT
+        from dcim.models import Device
+
+        DRY = {{ dry_run | bool | lower }}
+        OLD = '{{ replace_device_old }}'
+        NEW = '{{ replace_device_new }}'
+
+        new_exists = Device.objects.filter(name=NEW).exists()
+        old_qs = Device.objects.filter(name=OLD)
+
+        if not new_exists:
+            print(f'SKIP: replacement device "{NEW}" does not exist yet')
+        elif not old_qs.exists():
+            print(f'SKIP: old device "{OLD}" already removed')
+        else:
+            old = old_qs.first()
+            action = 'WOULD DELETE' if DRY else 'DELETE'
+            print(f'{action}: {old.name} (id={old.id}) — replaced by {NEW}')
+            if not DRY:
+                old_qs.delete()
+        PYSCRIPT
+      register: _replace_result
+      when: replace_device_old | length > 0 and replace_device_new | length > 0
+      changed_when: "not (dry_run | bool) and 'DELETE:' in (_replace_result.stdout | default(''))"
+
+    - name: Replace device result
+      ansible.builtin.debug:
+        msg: "{{ _replace_result.stdout_lines | default([]) }}"
+      when: replace_device_old | length > 0 and replace_device_new | length > 0
+
+    # ── Migrate Region ──────────────────────────────────────────
+    - name: "Migrate sites from region '{{ migrate_region_old }}' → '{{ migrate_region_new }}'"
+      ansible.builtin.shell: |
+        {{ _manage }} << PYSCRIPT
+        from dcim.models import Region, Site
+
+        DRY = {{ dry_run | bool | lower }}
+        OLD = '{{ migrate_region_old }}'
+        NEW = '{{ migrate_region_new }}'
+
+        old_region = Region.objects.filter(name=OLD).first()
+        new_region = Region.objects.filter(name=NEW).first()
+
+        if not old_region:
+            print(f'SKIP: region "{OLD}" not found')
+        elif not new_region:
+            print(f'SKIP: region "{NEW}" not found — create it first')
+        else:
+            sites = Site.objects.filter(region=old_region)
+            for s in sites:
+                action = 'WOULD UPDATE' if DRY else 'UPDATE'
+                print(f'{action}: Site "{s.name}" region {OLD} -> {NEW}')
+                if not DRY:
+                    s.region = new_region
+                    s.save()
+
+            if sites.count() == 0:
+                print(f'No sites using region "{OLD}"')
+
+            remaining = Site.objects.filter(region=old_region).count()
+            if remaining == 0 and not DRY:
+                print(f'DELETE: region "{OLD}" (no sites reference it)')
+                old_region.delete()
+            elif remaining == 0 and DRY:
+                print(f'WOULD DELETE: region "{OLD}" (no sites would reference it)')
+        PYSCRIPT
+      register: _region_result
+      when: migrate_region_old | length > 0 and migrate_region_new | length > 0
+      changed_when: "not (dry_run | bool) and ('UPDATE:' in (_region_result.stdout | default('')) or 'DELETE:' in (_region_result.stdout | default('')))"
+
+    - name: Region migration result
+      ansible.builtin.debug:
+        msg: "{{ _region_result.stdout_lines | default([]) }}"
+      when: migrate_region_old | length > 0 and migrate_region_new | length > 0
+
+    # ── Migrate Rack ────────────────────────────────────────────
+    - name: "Migrate devices from rack '{{ migrate_rack_old }}' → '{{ migrate_rack_new }}'"
+      ansible.builtin.shell: |
+        {{ _manage }} << PYSCRIPT
+        from dcim.models import Rack, Device
+
+        DRY = {{ dry_run | bool | lower }}
+        OLD = '{{ migrate_rack_old }}'
+        NEW = '{{ migrate_rack_new }}'
+
+        old_rack = Rack.objects.filter(name=OLD).first()
+        new_rack = Rack.objects.filter(name=NEW).first()
+
+        if not old_rack:
+            print(f'SKIP: rack "{OLD}" not found')
+        elif not new_rack:
+            print(f'SKIP: rack "{NEW}" not found — create it first')
+        else:
+            devices = Device.objects.filter(rack=old_rack)
+            for d in devices:
+                action = 'WOULD MOVE' if DRY else 'MOVE'
+                print(f'{action}: {d.name} rack {OLD} -> {NEW}')
+                if not DRY:
+                    d.rack = new_rack
+                    d.save()
+
+            if devices.count() == 0:
+                print(f'No devices in rack "{OLD}"')
+
+            remaining = Device.objects.filter(rack=old_rack).count()
+            if remaining == 0 and not DRY:
+                print(f'DELETE: rack "{OLD}" (empty)')
+                old_rack.delete()
+            elif remaining == 0 and DRY:
+                print(f'WOULD DELETE: rack "{OLD}" (would be empty)')
+        PYSCRIPT
+      register: _rack_result
+      when: migrate_rack_old | length > 0 and migrate_rack_new | length > 0
+      changed_when: "not (dry_run | bool) and ('MOVE:' in (_rack_result.stdout | default('')) or 'DELETE:' in (_rack_result.stdout | default('')))"
+
+    - name: Rack migration result
+      ansible.builtin.debug:
+        msg: "{{ _rack_result.stdout_lines | default([]) }}"
+      when: migrate_rack_old | length > 0 and migrate_rack_new | length > 0
+
+    # ── Delete Orphans ──────────────────────────────────────────
+    - name: Delete orphaned regions, racks, and locations
+      ansible.builtin.shell: |
+        {{ _manage }} << PYSCRIPT
+        from dcim.models import Region, Rack, Location, Site, Device
+
+        DRY = {{ dry_run | bool | lower }}
+        deleted = 0
+
+        # Orphan regions (no sites reference them)
+        for r in Region.objects.all():
+            if Site.objects.filter(region=r).count() == 0:
+                action = 'WOULD DELETE' if DRY else 'DELETE'
+                print(f'{action}: orphan region "{r.name}"')
+                if not DRY:
+                    r.delete()
+                deleted += 1
+
+        # Orphan racks (no devices reference them)
+        for r in Rack.objects.all():
+            if Device.objects.filter(rack=r).count() == 0:
+                action = 'WOULD DELETE' if DRY else 'DELETE'
+                print(f'{action}: orphan rack "{r.name}"')
+                if not DRY:
+                    r.delete()
+                deleted += 1
+
+        # Orphan locations (no racks or devices reference them)
+        for loc in Location.objects.all():
+            racks_here = Rack.objects.filter(location=loc).count()
+            devices_here = Device.objects.filter(location=loc).count()
+            if racks_here == 0 and devices_here == 0:
+                action = 'WOULD DELETE' if DRY else 'DELETE'
+                print(f'{action}: orphan location "{loc.name}"')
+                if not DRY:
+                    loc.delete()
+                deleted += 1
+
+        if deleted == 0:
+            print('No orphaned objects found')
+        else:
+            verb = 'Would delete' if DRY else 'Deleted'
+            print(f'{verb} {deleted} orphaned objects')
+        PYSCRIPT
+      register: _orphans_result
+      when: delete_orphans | bool
+      changed_when: "not (dry_run | bool) and 'Deleted' in (_orphans_result.stdout | default('')) and 'Deleted 0' not in (_orphans_result.stdout | default(''))"
+
+    - name: Orphan cleanup results
+      ansible.builtin.debug:
+        msg: "{{ _orphans_result.stdout_lines | default([]) }}"
+      when: delete_orphans | bool
+
+    # ── Final State ─────────────────────────────────────────────
+    - name: Post-cleanup state
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from dcim.models import Device, Region, Rack, Site, Location
+        from tenancy.models import Tenant
+
+        print('=== Post-Cleanup State ===')
+        print(f'Devices: {Device.objects.count()}')
+        for r in Region.objects.all():
+            print(f'  Region: {r.name}')
+        for s in Site.objects.all():
+            print(f'  Site: {s.name}  region={s.region.name if s.region else "(none)"}  lat={s.latitude}  lon={s.longitude}')
+        for loc in Location.objects.all():
+            print(f'  Location: {loc.name}  site={loc.site.name}')
+        for r in Rack.objects.all():
+            print(f'  Rack: {r.name}  location={r.location.name if r.location else "(none)"}  site={r.site.name}')
+        for t in Tenant.objects.all():
+            print(f'  Tenant: {t.name}')
+        racked = Device.objects.exclude(rack__isnull=True).count()
+        tenanted = Device.objects.exclude(tenant__isnull=True).count()
+        print(f'Devices with rack: {racked}')
+        print(f'Devices with tenant: {tenanted}')
+        PYSCRIPT
+      register: _final
+      changed_when: false
+      when: not (dry_run | bool)
+
+    - name: Show final state
+      ansible.builtin.debug:
+        msg: "{{ _final.stdout_lines | default([]) }}"
+      when: not (dry_run | bool)

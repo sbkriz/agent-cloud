@@ -55,6 +55,9 @@ templates:
   - name: Check Discovery Pipeline
     playbook: platform/playbooks/check-discovery.yml
 
+  - name: Cleanup NetBox
+    playbook: platform/playbooks/cleanup-netbox.yml
+
   - name: Validate Proxmox Cluster
     playbook: platform/playbooks/proxmox-validate.yml
 

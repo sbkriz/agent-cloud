@@ -186,6 +186,18 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 - **No credentials, IPs, or usernames** in committed files — use `{{ }}` template variables
 - IPs and real credentials belong exclusively in site-config (private)
 
+### Branch Workflow
+
+**All code changes go through feature branches and pull requests — never push directly to main.**
+
+1. Create a feature branch from `main`: `git checkout -b feat/<description>` or `fix/<description>`
+2. Commit changes on the feature branch
+3. Push the branch: `git push -u origin feat/<description>`
+4. Create a PR via `gh pr create`
+5. Merge the PR after review
+
+This applies to all development: new features, bug fixes, plan updates, and documentation changes.
+
 ### Mandatory Pre-Push Audit
 
 Run as a **separate step** before every commit. Review the output. Then commit separately.
