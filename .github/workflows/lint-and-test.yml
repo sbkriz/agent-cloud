@@ -1,0 +1,43 @@
+---
+name: Lint and Test
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python lint (ruff)
+        uses: astral-sh/ruff-action@v3
+
+      - name: Shell lint (shellcheck)
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: platform/
+          severity: warning
+
+      - name: YAML lint
+        run: pip install yamllint && yamllint -c .yamllint.yml .
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: IP/credential audit
+        run: |
+          ! git diff origin/main...HEAD | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
+          ! git diff origin/main...HEAD | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
