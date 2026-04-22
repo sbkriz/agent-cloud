@@ -58,7 +58,6 @@ Playbooks with `service_branch` support:
 - `deploy-nemoclaw.yml`
 - `clean-deploy-netbox.yml`
 - `deploy-orb-agent.yml`
-- `deploy-service.yml`
 
 ### Semaphore Survey Variables
 

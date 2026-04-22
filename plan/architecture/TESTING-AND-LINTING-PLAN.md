@@ -227,7 +227,7 @@ jobs:
       - name: IP/credential audit
         run: |
           ! git diff origin/main...HEAD | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
-          ! git diff origin/main...HEAD | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}'
+          ! git diff origin/main...HEAD | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
 
   test:
     runs-on: ubuntu-latest
