@@ -24,10 +24,10 @@ New services fall into one of four tiers, each with different integration weight
 
 | Tier | Examples | Integration Weight | Typical VM Size |
 | ---- | -------- | ------------------ | --------------- |
-| **Infrastructure** | OpenBao, Semaphore, NetBox, Caddy | Full (5-phase deploy, dedicated VM, AppRole if runtime vault access) | Medium-Large |
-| **Automation** | n8n, NocoDB | Full (5-phase deploy, dedicated VM) | Medium |
+| **Infrastructure** | OpenBao, Semaphore, NetBox, Caddy | Full (5-phase playbook, dedicated VM, AppRole if runtime vault access) | Small-Medium |
+| **Automation** | n8n, NocoDB | Full (5-phase playbook, dedicated VM) | Medium |
 | **AI/Agent** | NemoClaw, NetClaw, WisAI, WisBot | Full + agent context directory | Large (GPU for inference) |
-| **Auxiliary** | Wiki.js, Postiz, Nextcloud, a2a-registry | Simplified (3-phase deploy, may co-locate on shared VM) | Small-Medium |
+| **Auxiliary** | Wiki.js, Postiz, Nextcloud, a2a-registry | Simplified (3-phase playbook, may co-locate on shared VM) | Small-Medium |
 
 ### Classification Decision
 
@@ -94,7 +94,7 @@ Does the service need runtime OpenBao access?
 - [ ] If runtime vault access needed: provision AppRole via `tasks/manage-approle.yml`
   - Create least-privilege HCL policy at `platform/services/openbao/deployment/config/policies/<service>.hcl`
   - Scope to exactly the paths the service needs — no wildcards
-  - Store AppRole credentials at `secret/services/approles/<service>`
+  - Store AppRole credentials at `secret/data/services/approles/<service>`
 
 **Decision: AppRole scope**
 
