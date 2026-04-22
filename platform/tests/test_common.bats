@@ -48,7 +48,12 @@ teardown() {
   [ "$(cat "$TEST_DIR/key1.txt")" = "val1" ]
   [ "$(get_secret "$TEST_DIR" "key1")" = "val1" ]
 
-  perms=$(stat -f "%Lp" "$TEST_DIR/key1.txt" 2>/dev/null || stat -c "%a" "$TEST_DIR/key1.txt" 2>/dev/null)
+  # Cross-platform permission check (macOS vs Linux stat)
+  if stat -f "%Lp" "$TEST_DIR/key1.txt" >/dev/null 2>&1; then
+    perms=$(stat -f "%Lp" "$TEST_DIR/key1.txt")
+  else
+    perms=$(stat -c "%a" "$TEST_DIR/key1.txt")
+  fi
   [ "$perms" = "600" ]
 
   put_secret "$TEST_DIR" "key1" "val2"

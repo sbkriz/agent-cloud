@@ -41,7 +41,12 @@ teardown() {
   [ -f "$SECRETS_DIR/db_pass.txt" ]
   [ "$(get_secret "db_pass")" = "my_secret" ]
 
-  perms=$(stat -f "%Lp" "$SECRETS_DIR/db_pass.txt" 2>/dev/null || stat -c "%a" "$SECRETS_DIR/db_pass.txt" 2>/dev/null)
+  # Cross-platform permission check (macOS vs Linux stat)
+  if stat -f "%Lp" "$SECRETS_DIR/db_pass.txt" >/dev/null 2>&1; then
+    perms=$(stat -f "%Lp" "$SECRETS_DIR/db_pass.txt")
+  else
+    perms=$(stat -c "%a" "$SECRETS_DIR/db_pass.txt")
+  fi
   [ "$perms" = "600" ]
 
   [ -z "$(get_secret "nonexistent")" ]

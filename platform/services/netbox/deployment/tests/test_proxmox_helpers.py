@@ -1,7 +1,6 @@
 """Tests for proxmox_discovery pure helper functions."""
 
 import pytest
-
 from proxmox_discovery import (
     _bytes_to_gb,
     _iface_type,

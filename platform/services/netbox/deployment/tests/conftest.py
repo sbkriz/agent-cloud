@@ -8,8 +8,6 @@ We stub them here so worker code can be imported in tests.
 import sys
 import types
 from dataclasses import dataclass, field
-from unittest.mock import MagicMock
-
 
 # ── Stub orb-agent runtime modules ──────────────────────────────────
 

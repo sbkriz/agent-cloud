@@ -1,7 +1,6 @@
 """Tests for pfsense_sync pure helper functions."""
 
 import pytest
-
 from pfsense_sync import _is_valid_ip
 
 

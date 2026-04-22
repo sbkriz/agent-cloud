@@ -241,7 +241,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             user, token_name = token_id.split("!", 1)
         else:
             user = token_id
-            token_name = "discovery"
+            token_name = "discovery"  # nosec B105 — token name (identifier), not a secret
 
         return ProxmoxAPI(
             host,
