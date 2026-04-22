@@ -5,7 +5,8 @@ then returns Diode entities for ingestion into NetBox.
 
 Phase 2a: Cluster metadata (nodes, VMs, LXC with resource configs).
 Phase 2b: Guest agent network interfaces and IPs (nodes, VMs, LXC).
-Phase 2c-i: Primary IPv4 assignment on all devices.
+Phase 2c-i: Primary IPv4 assignment on all devices/VMs.
+Phase 2c-ii: Cluster modeling (Cluster + VirtualMachine entities, VMInterface for VMs/LXC).
 Phase 2c-iv: Description sanitization (strips credential lines from VM/LXC descriptions).
 
 Policy config expects:
@@ -37,6 +38,8 @@ from urllib.parse import urlparse
 from proxmoxer import ProxmoxAPI
 
 from netboxlabs.diode.sdk.ingester import (
+    Cluster,
+    ClusterType,
     Device,
     DeviceRole,
     DeviceType,
@@ -50,12 +53,15 @@ from netboxlabs.diode.sdk.ingester import (
     Region,
     Site,
     Tenant,
+    VirtualMachine,
+    VMInterface,
 )
 from worker.backend import Backend as _Backend
 from worker.models import Metadata, Policy
 
 MANUFACTURER = "Proxmox"
 PLATFORM = "Proxmox VE"
+CLUSTER_TYPE = "Proxmox VE"
 
 # Interface types to skip (loopback, internal Proxmox bridges, etc.)
 _SKIP_IFACE_NAMES = {"lo"}
@@ -167,8 +173,8 @@ class ProxmoxDiscoveryBackend(_Backend):
         return Metadata(
             name="proxmox-discovery",
             app_name="proxmox-discovery",
-            app_version="2.3.0",
-            description="Proxmox VE API → NetBox via Diode (nodes, VMs, LXC + interfaces/IPs + seed data + primary_ip4)",
+            app_version="3.0.0",
+            description="Proxmox VE API → NetBox via Diode (nodes as Device, VMs/LXC as VirtualMachine, Cluster, primary_ip4)",
         )
 
     def run(self, policy_name: str, policy: Policy) -> Iterable[Entity]:
@@ -251,11 +257,37 @@ class ProxmoxDiscoveryBackend(_Backend):
         )
 
     def _discover(self, prox, site_name):
-        """Run full cluster discovery: nodes → VMs → LXC containers."""
+        """Run full cluster discovery: cluster → nodes → VMs → LXC containers."""
         entities = []
 
         # Emit seed entities (region, location, rack, tenant) first
         entities.extend(self._build_seed_entities())
+
+        # Query Proxmox cluster name and emit Cluster entity
+        cluster_name = None
+        try:
+            cluster_status = prox.cluster.status.get()
+            for entry in cluster_status:
+                if isinstance(entry, dict) and entry.get("type") == "cluster":
+                    cluster_name = entry.get("name")
+                    break
+        except Exception as e:
+            print(f"[proxmox-discovery] WARNING: Failed to get cluster status: {e}", file=sys.stderr)
+
+        if not cluster_name:
+            cluster_name = "pve-cluster"
+
+        self._cluster_name = cluster_name
+        cluster_kwargs = {
+            "name": cluster_name,
+            "type": ClusterType(name=CLUSTER_TYPE),
+            "status": "active",
+            "scope_site": Site(name=site_name),
+        }
+        tenant = self._tenant_or_none()
+        if tenant:
+            cluster_kwargs["tenant"] = tenant
+        entities.append(Entity(cluster=Cluster(**cluster_kwargs)))
 
         nodes = prox.nodes.get()
         for node_data in nodes:
@@ -401,20 +433,10 @@ class ProxmoxDiscoveryBackend(_Backend):
             site=Site(name=site_name),
         )
 
-    # ── Interface + IP entity builder ─────────────────────────────
+    # ── Interface + IP entity builder (physical devices) ────────────
 
     def _build_iface_entities(self, iface_name, device_ref, hw_addr=None, ips=None):
-        """Build Interface + IPAddress entities for one network interface.
-
-        Args:
-            iface_name: Interface name (e.g. eth0, vmbr0)
-            device_ref: Device reference for linking
-            hw_addr: MAC address (optional)
-            ips: List of dicts with 'address' and 'prefix' keys (optional)
-
-        Returns:
-            List of Entity objects
-        """
+        """Build Interface + IPAddress entities for a physical device interface."""
         entities = []
 
         if _should_skip_iface(iface_name):
@@ -435,7 +457,6 @@ class ProxmoxDiscoveryBackend(_Backend):
             prefix = ip_info.get("prefix")
             if not addr or not prefix:
                 continue
-            # Skip link-local and loopback
             if addr.startswith("fe80:") or addr.startswith("127.") or addr == "::1":
                 continue
 
@@ -448,6 +469,60 @@ class ProxmoxDiscoveryBackend(_Backend):
                 ),
                 status="active",
                 description=f"{iface_name} on {device_ref.name}",
+            )
+            if dns_name:
+                ip_kwargs["dns_name"] = dns_name
+            ip_entity = IPAddress(**ip_kwargs)
+            entities.append(Entity(ip_address=ip_entity))
+
+        return entities
+
+    # ── VMInterface + IP entity builder (virtual machines) ────────
+
+    def _vm_ref(self, name, site_name):
+        """Minimal VirtualMachine reference for linking VMInterfaces/IPs."""
+        return VirtualMachine(
+            name=name,
+            cluster=Cluster(
+                name=self._cluster_name,
+                type=ClusterType(name=CLUSTER_TYPE),
+            ),
+            site=Site(name=site_name),
+        )
+
+    def _build_vm_iface_entities(self, iface_name, vm_ref, hw_addr=None, ips=None):
+        """Build VMInterface + IPAddress entities for a virtual machine interface."""
+        entities = []
+
+        if _should_skip_iface(iface_name):
+            return entities
+
+        vm_iface = VMInterface(
+            name=iface_name,
+            virtual_machine=vm_ref,
+            enabled=True,
+            primary_mac_address=hw_addr if hw_addr else None,
+            description=f"Discovered via Proxmox API",
+        )
+        entities.append(Entity(vm_interface=vm_iface))
+
+        for ip_info in (ips or []):
+            addr = ip_info.get("address", "")
+            prefix = ip_info.get("prefix")
+            if not addr or not prefix:
+                continue
+            if addr.startswith("fe80:") or addr.startswith("127.") or addr == "::1":
+                continue
+
+            dns_name = _reverse_dns(addr)
+            ip_kwargs = dict(
+                address=f"{addr}/{prefix}",
+                assigned_object_vm_interface=VMInterface(
+                    name=iface_name,
+                    virtual_machine=vm_ref,
+                ),
+                status="active",
+                description=f"{iface_name} on {vm_ref.name}",
             )
             if dns_name:
                 ip_kwargs["dns_name"] = dns_name
@@ -560,7 +635,7 @@ class ProxmoxDiscoveryBackend(_Backend):
     # ── VM builder ────────────────────────────────────────────────
 
     def _build_vm(self, vm_data, node_name, prox, site_name):
-        """Build entities for a QEMU VM (device + guest agent interfaces + IPs)."""
+        """Build entities for a QEMU VM (VirtualMachine + VMInterfaces + IPs)."""
         entities = []
         vmid = vm_data["vmid"]
         vm_name = vm_data.get("name", f"vm-{vmid}")
@@ -575,7 +650,8 @@ class ProxmoxDiscoveryBackend(_Backend):
 
         cpu_count = vm_data.get("cpus", vm_data.get("maxcpu", 0))
         raw_mem = vm_data.get("maxmem", 0)
-        mem_gb = _bytes_to_gb(raw_mem) if raw_mem > 1024 * 1024 else _mb_to_gb(raw_mem)
+        mem_mb = _int(raw_mem / (1024 * 1024)) if raw_mem > 1024 * 1024 else _int(raw_mem)
+        disk_gb = 0
 
         vm_desc = ""
         try:
@@ -585,7 +661,17 @@ class ProxmoxDiscoveryBackend(_Backend):
             sockets = _int(config.get("sockets", 1), 1)
             cpu_count = cpu_count * sockets
             if "memory" in config:
-                mem_gb = _mb_to_gb(config["memory"])
+                mem_mb = _int(config["memory"])
+            for key, val in config.items():
+                if key.startswith(("scsi", "virtio", "ide", "sata")) and isinstance(val, str) and "size=" in val:
+                    try:
+                        size_str = val.split("size=")[1].split(",")[0].strip()
+                        if size_str.endswith("G"):
+                            disk_gb += int(size_str[:-1])
+                        elif size_str.endswith("M"):
+                            disk_gb += max(1, int(size_str[:-1]) // 1024)
+                    except (ValueError, IndexError):
+                        pass
         except Exception as e:
             print(f"[proxmox-discovery] DEBUG: Failed to get config for VM {vmid}: {e}", file=sys.stderr)
 
@@ -623,37 +709,37 @@ class ProxmoxDiscoveryBackend(_Backend):
         primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
         vm_desc = _sanitize_description(vm_desc)
 
-        # Virtual machine — gets site (with region) and tenant, no rack
-        device_kwargs = dict(
+        vm_kwargs = dict(
             name=vm_name,
-            device_type=DeviceType(
-                model=f"QEMU VM ({cpu_count} vCPU, {mem_gb} GiB)",
-                manufacturer=Manufacturer(name=MANUFACTURER),
+            cluster=Cluster(
+                name=self._cluster_name,
+                type=ClusterType(name=CLUSTER_TYPE),
             ),
             site=Site(name=site_name),
             role=DeviceRole(name="server"),
             status=nb_status,
+            vcpus=float(cpu_count),
+            memory=mem_mb,
+            disk=disk_gb if disk_gb else None,
             description=vm_desc,
             comments=(
                 f"VMID: {vmid}. Host: {node_name}. "
-                f"vCPUs: {cpu_count}, RAM: {mem_gb} GiB. "
                 f"Discovered via Proxmox API."
             ),
         )
         tenant = self._tenant_or_none()
         if tenant:
-            device_kwargs["tenant"] = tenant
+            vm_kwargs["tenant"] = tenant
         if primary_addr:
-            device_kwargs["primary_ip4"] = IPAddress(
+            vm_kwargs["primary_ip4"] = IPAddress(
                 address=f"{primary_addr}/{primary_prefix}"
             )
-        device = Device(**device_kwargs)
-        entities.append(Entity(device=device))
+        entities.append(Entity(virtual_machine=VirtualMachine(**vm_kwargs)))
 
-        # Build Interface + IP entities from collected data
-        device_ref = self._device_ref(vm_name, site_name)
+        # Build VMInterface + IP entities from collected data
+        vm_ref = self._vm_ref(vm_name, site_name)
         for iface_name, hw_addr, ips in collected_ifaces:
-            iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
+            iface_entities = self._build_vm_iface_entities(iface_name, vm_ref, hw_addr, ips)
             entities.extend(iface_entities)
 
         return entities
@@ -661,7 +747,7 @@ class ProxmoxDiscoveryBackend(_Backend):
     # ── LXC builder ───────────────────────────────────────────────
 
     def _build_lxc(self, ct_data, node_name, prox, site_name):
-        """Build entities for an LXC container (device + interfaces + IPs)."""
+        """Build entities for an LXC container (VirtualMachine + VMInterfaces + IPs)."""
         entities = []
         vmid = ct_data["vmid"]
         ct_name = ct_data.get("name", f"ct-{vmid}")
@@ -675,7 +761,8 @@ class ProxmoxDiscoveryBackend(_Backend):
 
         cpu_count = ct_data.get("cpus", ct_data.get("maxcpu", 0))
         raw_mem = ct_data.get("maxmem", 0)
-        mem_gb = _bytes_to_gb(raw_mem) if raw_mem > 1024 * 1024 else _mb_to_gb(raw_mem)
+        mem_mb = _int(raw_mem / (1024 * 1024)) if raw_mem > 1024 * 1024 else _int(raw_mem)
+        disk_gb = 0
 
         ct_desc = ""
         try:
@@ -683,7 +770,17 @@ class ProxmoxDiscoveryBackend(_Backend):
             ct_desc = config.get("description", "")
             cpu_count = _int(config.get("cores", cpu_count), cpu_count)
             if "memory" in config:
-                mem_gb = _mb_to_gb(config["memory"])
+                mem_mb = _int(config["memory"])
+            rootfs = config.get("rootfs", "")
+            if isinstance(rootfs, str) and "size=" in rootfs:
+                try:
+                    size_str = rootfs.split("size=")[1].split(",")[0].strip()
+                    if size_str.endswith("G"):
+                        disk_gb = int(size_str[:-1])
+                    elif size_str.endswith("M"):
+                        disk_gb = max(1, int(size_str[:-1]) // 1024)
+                except (ValueError, IndexError):
+                    pass
         except Exception as e:
             print(f"[proxmox-discovery] DEBUG: Failed to get config for LXC {vmid}: {e}", file=sys.stderr)
 
@@ -723,37 +820,37 @@ class ProxmoxDiscoveryBackend(_Backend):
         primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
         ct_desc = _sanitize_description(ct_desc)
 
-        # Container — gets site (with region) and tenant, no rack
-        device_kwargs = dict(
+        vm_kwargs = dict(
             name=ct_name,
-            device_type=DeviceType(
-                model=f"LXC Container ({cpu_count} vCPU, {mem_gb} GiB)",
-                manufacturer=Manufacturer(name=MANUFACTURER),
+            cluster=Cluster(
+                name=self._cluster_name,
+                type=ClusterType(name=CLUSTER_TYPE),
             ),
             site=Site(name=site_name),
             role=DeviceRole(name="container"),
             status=nb_status,
+            vcpus=float(cpu_count),
+            memory=mem_mb,
+            disk=disk_gb if disk_gb else None,
             description=ct_desc,
             comments=(
-                f"VMID: {vmid}. Host: {node_name}. "
-                f"vCPUs: {cpu_count}, RAM: {mem_gb} GiB. "
+                f"VMID: {vmid}. Host: {node_name}. LXC container. "
                 f"Discovered via Proxmox API."
             ),
         )
         tenant = self._tenant_or_none()
         if tenant:
-            device_kwargs["tenant"] = tenant
+            vm_kwargs["tenant"] = tenant
         if primary_addr:
-            device_kwargs["primary_ip4"] = IPAddress(
+            vm_kwargs["primary_ip4"] = IPAddress(
                 address=f"{primary_addr}/{primary_prefix}"
             )
-        device = Device(**device_kwargs)
-        entities.append(Entity(device=device))
+        entities.append(Entity(virtual_machine=VirtualMachine(**vm_kwargs)))
 
-        # Build Interface + IP entities from collected data
-        device_ref = self._device_ref(ct_name, site_name)
+        # Build VMInterface + IP entities from collected data
+        vm_ref = self._vm_ref(ct_name, site_name)
         for iface_name, hw_addr, ips in collected_ifaces:
-            iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
+            iface_entities = self._build_vm_iface_entities(iface_name, vm_ref, hw_addr, ips)
             entities.extend(iface_entities)
 
         return entities

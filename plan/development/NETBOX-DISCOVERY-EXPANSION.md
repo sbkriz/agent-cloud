@@ -1,7 +1,7 @@
 # NetBox Discovery Expansion Plan
 
 **Date:** 2026-04-04 (original) → **2026-04-19** (revised after Phase 2 completion, duplication incident, and cleanup tooling)
-**Status:** IN PROGRESS — Phases 1, 2a, 2b, 2c complete. Phase D/E deferred.
+**Status:** COMPLETE — All phases through 2c done. Phase D (SNMPv3) and E (LLDP) deferred/optional.
 
 ---
 
@@ -85,8 +85,8 @@ graph TB
 - **Cleanup tooling** — Generic parameterized `cleanup-netbox.yml` playbook (Semaphore Template 57)
 
 **Remaining gaps:**
-- **Cluster modeling** — Proxmox cluster not represented. VMs modeled as Device instead of VirtualMachine (deferred — requires cross-entity-type migration)
 - **GPS coordinates** — Code fix deployed (2026-04-21): Site entity now always emitted with lat/lon. Verify on next discovery cycle; fall back to Django shell if Diode reconciler doesn't update existing Site scalars
+- **Post-migration cleanup** — After deploying v3.0.0, old Device entries for VMs/LXC will coexist with new VirtualMachine entities. Run cleanup-netbox.yml to remove the orphaned Devices
 
 **Post-cleanup state (32 devices):**
 - 1 region (US East), 1 site (Uhstray.io Datacenter), 1 location (Server Room)
@@ -151,9 +151,20 @@ Both workers now set `Device.primary_ip4` on every device. Restructured all devi
 - **proxmox_discovery v2.3.0**: `_build_node()` uses first IPv4 from management bridge interfaces. `_build_vm()` uses first guest agent IPv4. `_build_lxc()` uses first container IPv4. Helper `_pick_primary_ipv4()` skips loopback, link-local, and IPv6.
 - **pfsense_sync v1.3.0**: Queries interfaces before device creation, finds LAN interface by `descr == "LAN"`, sets its IP as primary.
 
-#### 2c-ii: Proxmox Cluster Modeling — DEFERRED
+#### 2c-ii: Proxmox Cluster Modeling — COMPLETE (2026-04-21)
 
-Switching VM/LXC from Device to VirtualMachine requires Diode SDK `Cluster`/`VirtualMachine` entities and risks creating duplicates (Diode doesn't reconcile across entity types). Deferred until a cleanup cycle can be planned alongside the migration.
+proxmox_discovery v3.0.0: VMs and LXC containers now emit as `VirtualMachine` entities (not `Device`), assigned to a `Cluster` entity queried from the Proxmox API (`prox.cluster.status.get()`). Physical nodes remain as `Device` (role: hypervisor).
+
+**Entity mapping change:**
+```
+Before:  Node → Device(hypervisor)    VM → Device(server)     LXC → Device(container)
+After:   Node → Device(hypervisor)    VM → VirtualMachine     LXC → VirtualMachine
+         Cluster(name from API, type="Proxmox VE", scope_site=...)
+```
+
+New SDK imports: `Cluster`, `ClusterType`, `VirtualMachine`, `VMInterface`. VMs/LXC now use `VMInterface` (not `Interface`) and `assigned_object_vm_interface` (not `assigned_object_interface`) for IP linking. Resource fields (`vcpus`, `memory`, `disk`) are set directly on VirtualMachine instead of in comments/device_type strings.
+
+**Migration required after deployment:** Old Device entries for VMs/LXC will persist (Diode is additive-only). Run `cleanup-netbox.yml` (Semaphore Template 57) to remove orphaned Device entities that now exist as VirtualMachines.
 
 #### 2c-iii: GPS Coordinates — FIXED (code-side)
 
@@ -223,9 +234,7 @@ Each discovery source uses a unique `agent_name` / `app_name` to prevent cross-s
 
 ## Diode SDK Entity Coverage
 
-**Currently used (14 types):** Device, DeviceRole, DeviceType, Entity, Interface, IPAddress, Location, Manufacturer, Platform, Rack, Region, Site, Tenant
-
-**Phase 2c additions (4 types):** Cluster, ClusterType, ClusterGroup, VirtualMachine
+**Currently used (17 types):** Cluster, ClusterType, Device, DeviceRole, DeviceType, Entity, Interface, IPAddress, Location, Manufacturer, Platform, Rack, Region, Site, Tenant, VirtualMachine, VMInterface
 
 **Available in SDK v1.10.0 but not yet needed:** Cable, CircuitTermination, ConsolePort, FrontPort, PowerFeed, Prefix, RearPort, VLAN, VLANGroup, VRF, and 70+ more
 
@@ -241,7 +250,7 @@ Each discovery source uses a unique `agent_name` / `app_name` to prevent cross-s
 | 2.5 Seed data templating | Low | Medium | COMPLETE (2026-04-17) |
 | 2.6 Cleanup tooling | Medium | High | COMPLETE (2026-04-18) |
 | 2c-i. Primary IPv4 | Low | High | COMPLETE (2026-04-21) |
-| 2c-ii. Cluster modeling | Medium | High | DEFERRED |
+| 2c-ii. Cluster modeling | Medium | High | COMPLETE (2026-04-21) |
 | 2c-iii. GPS coordinates | Low | Low | COMPLETE (2026-04-21) |
 | 2c-iv. Description sanitization | Low | Medium | COMPLETE (2026-04-21) |
 | D. SNMPv3 upgrade | Medium | Medium | DEFERRED |
