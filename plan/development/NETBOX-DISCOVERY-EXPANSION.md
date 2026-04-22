@@ -149,7 +149,7 @@ Closes the remaining data quality gaps before adding new discovery backends.
 
 Both workers now set `Device.primary_ip4` on every device. Restructured all device builders to collect interface/IP data BEFORE creating the Device entity, enabling `primary_ip4=IPAddress(address=...)` in the initial emit.
 
-- **proxmox_discovery v2.3.0**: `_build_node()` uses first IPv4 from management bridge interfaces. `_build_vm()` uses first guest agent IPv4. `_build_lxc()` uses first container IPv4. Helper `_pick_primary_ipv4()` skips loopback, link-local, and IPv6.
+- **proxmox_discovery v3.0.0**: `_build_node()` uses first IPv4 from management bridge interfaces. `_build_vm()` uses first guest agent IPv4. `_build_lxc()` uses first container IPv4. Helper `_pick_primary_ipv4()` skips loopback, link-local, and IPv6.
 - **pfsense_sync v1.3.0**: Queries interfaces before device creation, finds LAN interface by `descr == "LAN"`, sets its IP as primary.
 
 #### 2c-ii: Proxmox Cluster Modeling — COMPLETE (2026-04-21)

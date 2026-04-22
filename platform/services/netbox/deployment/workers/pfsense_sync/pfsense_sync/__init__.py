@@ -22,6 +22,7 @@ Example agent.yaml policy:
         api_key: "${vault://secret/services/discovery/pfsense/api_key}"
 """
 
+import ipaddress
 import sys
 from collections.abc import Iterable
 
@@ -50,6 +51,15 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 MANUFACTURER = "Netgate"
 PLATFORM_BASE = "pfSense"
+
+
+def _is_valid_ip(addr_str):
+    """Check if an IP address string is usable (not unspecified, loopback, or link-local)."""
+    try:
+        ip = ipaddress.ip_address(addr_str)
+        return not (ip.is_unspecified or ip.is_loopback or ip.is_link_local)
+    except (ValueError, TypeError):
+        return False
 
 
 class PfSenseClient:
@@ -250,7 +260,7 @@ class PfSenseSyncBackend(_Backend):
                 if iface.get("descr", "").upper() == "LAN":
                     ipaddr = iface.get("ipaddr", "")
                     subnet = iface.get("subnet", "")
-                    if ipaddr and subnet:
+                    if ipaddr and subnet and _is_valid_ip(ipaddr):
                         primary_ip = f"{ipaddr}/{subnet}"
                     break
         except Exception as e:
@@ -326,7 +336,7 @@ class PfSenseSyncBackend(_Backend):
 
             ipaddr = iface.get("ipaddr", "")
             subnet = iface.get("subnet", "")
-            if ipaddr and subnet:
+            if ipaddr and subnet and _is_valid_ip(ipaddr):
                 ip_entity = IPAddress(
                     address=f"{ipaddr}/{subnet}",
                     assigned_object_interface=Interface(

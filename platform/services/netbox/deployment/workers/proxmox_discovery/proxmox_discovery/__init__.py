@@ -571,14 +571,16 @@ class ProxmoxDiscoveryBackend(_Backend):
                         continue
 
                     ips = []
+                    seen = set()
                     if net.get("address") and net.get("netmask"):
                         prefix = self._netmask_to_prefix(net["netmask"])
                         if prefix:
+                            seen.add((net["address"], prefix))
                             ips.append({"address": net["address"], "prefix": prefix})
                     if net.get("cidr"):
                         cidr_prefix = _prefix_len(net["cidr"])
                         addr = str(net["cidr"]).split("/")[0]
-                        if cidr_prefix and addr:
+                        if cidr_prefix and addr and (addr, cidr_prefix) not in seen:
                             ips.append({"address": addr, "prefix": cidr_prefix})
                     if net.get("address6") and net.get("netmask6"):
                         ips.append({"address": net["address6"], "prefix": _int(net["netmask6"])})
@@ -649,9 +651,9 @@ class ProxmoxDiscoveryBackend(_Backend):
         nb_status = status_map.get(vm_status, "offline")
 
         cpu_count = vm_data.get("cpus", vm_data.get("maxcpu", 0))
-        raw_mem = vm_data.get("maxmem", 0)
-        mem_mb = _int(raw_mem / (1024 * 1024)) if raw_mem > 1024 * 1024 else _int(raw_mem)
-        disk_gb = 0
+        raw_mem = _int(vm_data.get("maxmem", 0))
+        mem_mb = raw_mem // (1024 * 1024) if raw_mem > 1024 * 1024 else raw_mem
+        disk_mb = 0
 
         vm_desc = ""
         try:
@@ -667,9 +669,9 @@ class ProxmoxDiscoveryBackend(_Backend):
                     try:
                         size_str = val.split("size=")[1].split(",")[0].strip()
                         if size_str.endswith("G"):
-                            disk_gb += int(size_str[:-1])
+                            disk_mb += int(size_str[:-1]) * 1024
                         elif size_str.endswith("M"):
-                            disk_gb += max(1, int(size_str[:-1]) // 1024)
+                            disk_mb += int(size_str[:-1])
                     except (ValueError, IndexError):
                         pass
         except Exception as e:
@@ -720,7 +722,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             status=nb_status,
             vcpus=float(cpu_count),
             memory=mem_mb,
-            disk=disk_gb if disk_gb else None,
+            disk=disk_mb if disk_mb else None,
             description=vm_desc,
             comments=(
                 f"VMID: {vmid}. Host: {node_name}. "
@@ -760,9 +762,9 @@ class ProxmoxDiscoveryBackend(_Backend):
         nb_status = status_map.get(ct_status, "offline")
 
         cpu_count = ct_data.get("cpus", ct_data.get("maxcpu", 0))
-        raw_mem = ct_data.get("maxmem", 0)
-        mem_mb = _int(raw_mem / (1024 * 1024)) if raw_mem > 1024 * 1024 else _int(raw_mem)
-        disk_gb = 0
+        raw_mem = _int(ct_data.get("maxmem", 0))
+        mem_mb = raw_mem // (1024 * 1024) if raw_mem > 1024 * 1024 else raw_mem
+        disk_mb = 0
 
         ct_desc = ""
         try:
@@ -776,9 +778,9 @@ class ProxmoxDiscoveryBackend(_Backend):
                 try:
                     size_str = rootfs.split("size=")[1].split(",")[0].strip()
                     if size_str.endswith("G"):
-                        disk_gb = int(size_str[:-1])
+                        disk_mb = int(size_str[:-1]) * 1024
                     elif size_str.endswith("M"):
-                        disk_gb = max(1, int(size_str[:-1]) // 1024)
+                        disk_mb = int(size_str[:-1])
                 except (ValueError, IndexError):
                     pass
         except Exception as e:
@@ -831,7 +833,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             status=nb_status,
             vcpus=float(cpu_count),
             memory=mem_mb,
-            disk=disk_gb if disk_gb else None,
+            disk=disk_mb if disk_mb else None,
             description=ct_desc,
             comments=(
                 f"VMID: {vmid}. Host: {node_name}. LXC container. "
