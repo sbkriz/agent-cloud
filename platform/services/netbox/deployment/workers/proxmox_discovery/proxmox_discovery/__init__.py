@@ -136,7 +136,7 @@ def _reverse_dns(ip, timeout=0.5):
 
 
 _SENSITIVE_LINE = re.compile(
-    r"\b(password|passwd|secret|token|key)\b", re.IGNORECASE
+    r"(?:\b|_)(password|passwd|secret|token|key)(?:\b|_)", re.IGNORECASE
 )
 
 
