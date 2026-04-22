@@ -93,8 +93,8 @@ class PfSenseSyncBackend(_Backend):
         return Metadata(
             name="pfsense-sync",
             app_name="pfsense-sync",
-            app_version="1.2.0",
-            description="pfSense REST API → NetBox via Diode (+ seed data)",
+            app_version="1.3.0",
+            description="pfSense REST API → NetBox via Diode (+ seed data + primary_ip4)",
         )
 
     def run(self, policy_name: str, policy: Policy) -> Iterable[Entity]:
@@ -165,25 +165,24 @@ class PfSenseSyncBackend(_Backend):
             except Exception as e:
                 print(f"[pfsense-sync] WARNING: Failed to emit Region entity: {e}", file=sys.stderr)
 
-        if self._region_name:
-            try:
-                site_kwargs = {
-                    "name": self._site_name,
-                    "region": Region(name=self._region_name),
-                }
-                if self._site_latitude:
-                    try:
-                        site_kwargs["latitude"] = float(self._site_latitude)
-                    except (ValueError, TypeError):
-                        pass
-                if self._site_longitude:
-                    try:
-                        site_kwargs["longitude"] = float(self._site_longitude)
-                    except (ValueError, TypeError):
-                        pass
-                entities.append(Entity(site=Site(**site_kwargs)))
-            except Exception as e:
-                print(f"[pfsense-sync] WARNING: Failed to emit Site→Region entity: {e}", file=sys.stderr)
+        # Standalone Site entity — carries Region link and GPS coordinates
+        try:
+            site_kwargs = {"name": self._site_name}
+            if self._region_name:
+                site_kwargs["region"] = Region(name=self._region_name)
+            if self._site_latitude:
+                try:
+                    site_kwargs["latitude"] = float(self._site_latitude)
+                except (ValueError, TypeError):
+                    pass
+            if self._site_longitude:
+                try:
+                    site_kwargs["longitude"] = float(self._site_longitude)
+                except (ValueError, TypeError):
+                    pass
+            entities.append(Entity(site=Site(**site_kwargs)))
+        except Exception as e:
+            print(f"[pfsense-sync] WARNING: Failed to emit Site entity: {e}", file=sys.stderr)
 
         if self._location_name:
             try:
@@ -228,17 +227,34 @@ class PfSenseSyncBackend(_Backend):
         hostname = hostname_data.get("hostname", "pfsense")
         domain = hostname_data.get("domain", "")
         fqdn = f"{hostname}.{domain}" if domain else hostname
-
-        # Use FQDN as device name to match SNMP sysName.
-        # pfSense reports sysName as the FQDN, so using FQDN ensures
-        # Diode merges SNMP-discovered and worker-discovered entities
-        # for the same device instead of creating duplicates.
         device_name = fqdn
 
         version = version_data.get("version", "unknown")
         device_type_model = status_data.get("platform", "Netgate 4200")
         serial = status_data.get("serial", "")
         platform_full = f"pfSense {version}" if version != "unknown" else "pfSense"
+
+        # Fetch interfaces first to find LAN IP for primary_ip4
+        ifaces = []
+        primary_ip = None
+        try:
+            raw_ifaces = pfsense.get_interfaces()
+            if isinstance(raw_ifaces, dict):
+                ifaces = list(raw_ifaces.values())
+            else:
+                ifaces = raw_ifaces if isinstance(raw_ifaces, list) else []
+
+            for iface in ifaces:
+                if not isinstance(iface, dict):
+                    continue
+                if iface.get("descr", "").upper() == "LAN":
+                    ipaddr = iface.get("ipaddr", "")
+                    subnet = iface.get("subnet", "")
+                    if ipaddr and subnet:
+                        primary_ip = f"{ipaddr}/{subnet}"
+                    break
+        except Exception as e:
+            print(f"[pfsense-sync] WARNING: Failed to fetch interfaces: {e}", file=sys.stderr)
 
         device_ref = Device(
             name=device_name,
@@ -273,61 +289,54 @@ class PfSenseSyncBackend(_Backend):
         tenant = self._tenant_or_none()
         if tenant:
             device_kwargs["tenant"] = tenant
+        if primary_ip:
+            device_kwargs["primary_ip4"] = IPAddress(address=primary_ip)
         device = Device(**device_kwargs)
         entities.append(Entity(device=device))
 
-        # Interfaces
-        try:
-            ifaces = pfsense.get_interfaces()
-            if isinstance(ifaces, dict):
-                ifaces = list(ifaces.values())
+        # Build Interface + IP entities from already-fetched data
+        for iface in ifaces:
+            if not isinstance(iface, dict):
+                continue
 
-            for iface in ifaces:
-                if not isinstance(iface, dict):
-                    continue
+            iface_name = iface.get("hwif", iface.get("name", ""))
+            if not iface_name:
+                continue
 
-                iface_name = iface.get("hwif", iface.get("name", ""))
-                if not iface_name:
-                    continue
+            descr = iface.get("descr", "")
+            mac = iface.get("macaddr", "")
+            enabled = bool(iface.get("enable"))
+            mtu = None
+            if iface.get("mtu"):
+                try:
+                    mtu = int(iface["mtu"])
+                except (ValueError, TypeError):
+                    pass
 
-                descr = iface.get("descr", "")
-                mac = iface.get("macaddr", "")
-                enabled = bool(iface.get("enable"))
-                mtu = None
-                if iface.get("mtu"):
-                    try:
-                        mtu = int(iface["mtu"])
-                    except (ValueError, TypeError):
-                        pass
+            iface_entity = Interface(
+                name=iface_name,
+                device=device_ref,
+                type="other",
+                enabled=enabled,
+                primary_mac_address=mac if mac else None,
+                mtu=mtu,
+                description=descr or f"pfSense interface {iface_name}",
+            )
+            entities.append(Entity(interface=iface_entity))
 
-                iface_entity = Interface(
-                    name=iface_name,
-                    device=device_ref,
-                    type="other",
-                    enabled=enabled,
-                    primary_mac_address=mac if mac else None,
-                    mtu=mtu,
-                    description=descr or f"pfSense interface {iface_name}",
+            ipaddr = iface.get("ipaddr", "")
+            subnet = iface.get("subnet", "")
+            if ipaddr and subnet:
+                ip_entity = IPAddress(
+                    address=f"{ipaddr}/{subnet}",
+                    assigned_object_interface=Interface(
+                        name=iface_name,
+                        device=device_ref,
+                    ),
+                    status="active",
+                    description=f"{descr} ({iface_name})" if descr else f"pfSense {iface_name}",
                 )
-                entities.append(Entity(interface=iface_entity))
-
-                # IP addresses on this interface
-                ipaddr = iface.get("ipaddr", "")
-                subnet = iface.get("subnet", "")
-                if ipaddr and subnet:
-                    ip_entity = IPAddress(
-                        address=f"{ipaddr}/{subnet}",
-                        assigned_object_interface=Interface(
-                            name=iface_name,
-                            device=device_ref,
-                        ),
-                        status="active",
-                        description=f"{descr} ({iface_name})" if descr else f"pfSense {iface_name}",
-                    )
-                    entities.append(Entity(ip_address=ip_entity))
-
-        except Exception as e:
-            print(f"[pfsense-sync] WARNING: Failed to fetch interfaces: {e}", file=sys.stderr)
+                entities.append(Entity(ip_address=ip_entity))
 
         # Gateways as IP addresses
         try:

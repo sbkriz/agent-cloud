@@ -1,7 +1,7 @@
 # NetBox Discovery Expansion Plan
 
 **Date:** 2026-04-04 (original) → **2026-04-19** (revised after Phase 2 completion, duplication incident, and cleanup tooling)
-**Status:** IN PROGRESS — Phases 1, 2a, 2b complete. Phase 2c (data enrichment) next.
+**Status:** IN PROGRESS — Phases 1, 2a, 2b, 2c complete. Phase D/E deferred.
 
 ---
 
@@ -84,11 +84,9 @@ graph TB
 - **Seed data templating** — Region, site, location, tenant, per-node rack assignments all templated from inventory
 - **Cleanup tooling** — Generic parameterized `cleanup-netbox.yml` playbook (Semaphore Template 57)
 
-**Gaps (Phase 2c targets):**
-- **Primary IPv4** — Not set on any devices. Workers create IPAddress entities but don't assign `Device.primary_ip4`
-- **Cluster modeling** — Proxmox cluster not represented. VMs modeled as Device instead of VirtualMachine
-- **GPS coordinates** — `site_latitude`/`site_longitude` in worker code but showing None in NetBox (likely Diode reconciler timing or config propagation issue)
-- **Credential leakage** — Proxmox VM descriptions contain plaintext passwords synced to NetBox. Needs sanitization filter in worker
+**Remaining gaps:**
+- **Cluster modeling** — Proxmox cluster not represented. VMs modeled as Device instead of VirtualMachine (deferred — requires cross-entity-type migration)
+- **GPS coordinates** — Code fix deployed (2026-04-21): Site entity now always emitted with lat/lon. Verify on next discovery cycle; fall back to Django shell if Diode reconciler doesn't update existing Site scalars
 
 **Post-cleanup state (32 devices):**
 - 1 region (US East), 1 site (Uhstray.io Datacenter), 1 location (Server Room)
@@ -140,58 +138,27 @@ Created `platform/playbooks/cleanup-netbox.yml` — generic parameterized cleanu
 
 ---
 
-## Active Phase
+## Completed Phase
 
-### Phase 2c: Data Enrichment
+### Phase 2c: Data Enrichment — COMPLETE (2026-04-21)
 
-**Priority:** IMMEDIATE — closes the remaining data quality gaps before adding new discovery backends
-**Effort:** Medium (worker code changes + validation)
-**Impact:** High (completes the device data model)
+Closes the remaining data quality gaps before adding new discovery backends.
 
-#### 2c-i: Primary IPv4 Assignment
+#### 2c-i: Primary IPv4 Assignment — COMPLETE
 
-**Problem:** Both workers create IPAddress entities and Interface entities, but neither sets `Device.primary_ip4`. Every device in NetBox shows "Primary IPv4: —".
+Both workers now set `Device.primary_ip4` on every device. Restructured all device builders to collect interface/IP data BEFORE creating the Device entity, enabling `primary_ip4=IPAddress(address=...)` in the initial emit.
 
-**Fix:** After creating interfaces and IPs for a device, identify the management IP and include `primary_ip4=IPAddress(address="x.x.x.x/24")` in the Device entity kwargs.
+- **proxmox_discovery v2.3.0**: `_build_node()` uses first IPv4 from management bridge interfaces. `_build_vm()` uses first guest agent IPv4. `_build_lxc()` uses first container IPv4. Helper `_pick_primary_ipv4()` skips loopback, link-local, and IPv6.
+- **pfsense_sync v1.3.0**: Queries interfaces before device creation, finds LAN interface by `descr == "LAN"`, sets its IP as primary.
 
-**Implementation:**
-- **proxmox_discovery**: For nodes, use the IP from `node.network` (management bridge). For VMs/LXC, use the first guest agent IP or fall back to the IP from site-config inventory
-- **pfsense_sync**: Use the LAN interface IP (already known from pfSense API response)
+#### 2c-ii: Proxmox Cluster Modeling — DEFERRED
 
-**Diode SDK:** `Device(primary_ip4=IPAddress(address="192.168.1.110/24"))` — supported since SDK v1.10.0
+Switching VM/LXC from Device to VirtualMachine requires Diode SDK `Cluster`/`VirtualMachine` entities and risks creating duplicates (Diode doesn't reconcile across entity types). Deferred until a cleanup cycle can be planned alongside the migration.
 
-#### 2c-ii: Proxmox Cluster Modeling
+#### 2c-iii: GPS Coordinates — FIXED (code-side)
 
-**Problem:** The Proxmox cluster isn't represented in NetBox. VMs and LXC containers are modeled as Device (physical equipment) instead of VirtualMachine (virtualized workload). No cluster→node→VM hierarchy exists.
+Root cause: the standalone Site entity carrying `latitude`/`longitude` was only emitted when `self._region_name` was set. If the Site was created before the region was configured, coords were never sent. Fixed in both workers to always emit the Site entity with available coords regardless of region. If Diode reconciler still doesn't update existing Site scalar fields, fall back to Django shell:
 
-**Fix:** Add Cluster, ClusterType, and VirtualMachine entities to the proxmox_discovery worker.
-
-**Implementation:**
-1. Import `Cluster`, `ClusterType`, `ClusterGroup`, `VirtualMachine` from Diode SDK
-2. Create a `Cluster` entity (name from Proxmox API cluster status, type: "Proxmox VE")
-3. Keep physical nodes as `Device` (role: hypervisor) — these are real hardware
-4. Switch VMs from `Device` to `VirtualMachine` with `cluster` assignment
-5. Switch LXC containers from `Device` to `VirtualMachine` (role: container) with `cluster` assignment
-
-**Entity mapping change:**
-```
-Before:  Node → Device(hypervisor)    VM → Device(server)     LXC → Device(container)
-After:   Node → Device(hypervisor)    VM → VirtualMachine     LXC → VirtualMachine
-         Cluster("pve-cluster", type="Proxmox VE", site=...)
-```
-
-**Risk:** Switching VM/LXC from Device to VirtualMachine may create duplicates if Diode doesn't reconcile across entity types. May need cleanup run after first deployment. Test with `dry_run` logging before pushing to Diode.
-
-#### 2c-iii: GPS Coordinates
-
-**Problem:** `site_latitude` and `site_longitude` are in the worker code and inventory, but NetBox shows `lat=None lon=None` on the site.
-
-**Diagnosis needed:**
-1. Verify the values propagate from `agent.yaml.j2` template → resolved config → worker `config` object
-2. Check if Diode reconciler ignores float fields on existing Site entities (reconciler may skip updates to non-null-to-null transitions but might also skip null-to-value)
-3. If Diode won't set coords, fall back to Django shell one-liner via Semaphore
-
-**Fallback fix (Django shell):**
 ```python
 from dcim.models import Site
 s = Site.objects.get(name="Uhstray.io Datacenter")
@@ -199,13 +166,9 @@ s.latitude, s.longitude = 41.19481797890624, -74.43649455017179
 s.save()
 ```
 
-#### 2c-iv: Description Sanitization
+#### 2c-iv: Description Sanitization — COMPLETE
 
-**Problem:** Proxmox VM descriptions contain plaintext credentials (root passwords, service passwords) that get synced verbatim to NetBox device descriptions.
-
-**Fix:** Add a sanitization filter in `_build_vm()` and `_build_lxc()` that strips or redacts lines matching common credential patterns before passing to Diode.
-
-**Pattern:** Strip lines matching `password`, `passwd`, `secret`, `token`, `key` (case-insensitive) from descriptions.
+Added `_sanitize_description()` to the proxmox_discovery worker. Strips lines containing credential keywords (`password`, `passwd`, `secret`, `token`, `key`, case-insensitive regex) from VM and LXC descriptions before Diode ingestion. Returns `None` for fully-redacted descriptions.
 
 ---
 
@@ -277,10 +240,10 @@ Each discovery source uses a unique `agent_name` / `app_name` to prevent cross-s
 | 2b. Proxmox guest IPs | Medium | High | COMPLETE (2026-04-16) |
 | 2.5 Seed data templating | Low | Medium | COMPLETE (2026-04-17) |
 | 2.6 Cleanup tooling | Medium | High | COMPLETE (2026-04-18) |
-| **2c-i. Primary IPv4** | **Low** | **High** | **TODO — next** |
-| **2c-ii. Cluster modeling** | **Medium** | **High** | **TODO** |
-| **2c-iii. GPS coordinates** | **Low** | **Low** | **TODO** |
-| **2c-iv. Description sanitization** | **Low** | **Medium** | **TODO** |
+| 2c-i. Primary IPv4 | Low | High | COMPLETE (2026-04-21) |
+| 2c-ii. Cluster modeling | Medium | High | DEFERRED |
+| 2c-iii. GPS coordinates | Low | Low | COMPLETE (2026-04-21) |
+| 2c-iv. Description sanitization | Low | Medium | COMPLETE (2026-04-21) |
 | D. SNMPv3 upgrade | Medium | Medium | DEFERRED |
 | E. LLDP topology | Low-Medium | Medium | OPTIONAL |
 

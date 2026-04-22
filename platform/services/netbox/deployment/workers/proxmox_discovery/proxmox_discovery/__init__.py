@@ -5,6 +5,8 @@ then returns Diode entities for ingestion into NetBox.
 
 Phase 2a: Cluster metadata (nodes, VMs, LXC with resource configs).
 Phase 2b: Guest agent network interfaces and IPs (nodes, VMs, LXC).
+Phase 2c-i: Primary IPv4 assignment on all devices.
+Phase 2c-iv: Description sanitization (strips credential lines from VM/LXC descriptions).
 
 Policy config expects:
   proxmox_url: Proxmox API URL (e.g. https://pve.example.com:8006)
@@ -26,6 +28,7 @@ Example agent.yaml policy:
         api_token: "${vault://secret/services/discovery/proxmox_api/api_token}"
 """
 
+import re
 import socket
 import sys
 from collections.abc import Iterable
@@ -126,6 +129,37 @@ def _reverse_dns(ip, timeout=0.5):
         socket.setdefaulttimeout(old_timeout)
 
 
+_SENSITIVE_LINE = re.compile(
+    r"\b(password|passwd|secret|token|key)\b", re.IGNORECASE
+)
+
+
+def _sanitize_description(desc):
+    """Strip lines containing credential keywords from Proxmox descriptions."""
+    if not desc:
+        return desc
+    lines = [ln for ln in desc.splitlines() if not _SENSITIVE_LINE.search(ln)]
+    return "\n".join(lines).strip() or None
+
+
+def _pick_primary_ipv4(ips):
+    """Select the best management IPv4 from collected IP dicts.
+
+    Skips loopback, link-local, and IPv6. Returns (address, prefix) or (None, None).
+    """
+    for ip in ips:
+        addr = ip.get("address", "")
+        prefix = ip.get("prefix")
+        if not addr or not prefix:
+            continue
+        if ":" in addr:
+            continue
+        if addr.startswith("127.") or addr.startswith("169.254."):
+            continue
+        return addr, prefix
+    return None, None
+
+
 class ProxmoxDiscoveryBackend(_Backend):
     """orb-agent worker backend for Proxmox VE API discovery."""
 
@@ -133,8 +167,8 @@ class ProxmoxDiscoveryBackend(_Backend):
         return Metadata(
             name="proxmox-discovery",
             app_name="proxmox-discovery",
-            app_version="2.2.0",
-            description="Proxmox VE API → NetBox via Diode (nodes, VMs, LXC + interfaces/IPs + seed data)",
+            app_version="2.3.0",
+            description="Proxmox VE API → NetBox via Diode (nodes, VMs, LXC + interfaces/IPs + seed data + primary_ip4)",
         )
 
     def run(self, policy_name: str, policy: Policy) -> Iterable[Entity]:
@@ -301,26 +335,25 @@ class ProxmoxDiscoveryBackend(_Backend):
             except Exception as e:
                 print(f"[proxmox-discovery] WARNING: Failed to emit Region entity: {e}", file=sys.stderr)
 
-        # Standalone Site entity links Site→Region (Device entities must NOT nest Region)
-        if self._region_name:
-            try:
-                site_kwargs = {
-                    "name": self._site_name,
-                    "region": Region(name=self._region_name),
-                }
-                if self._site_latitude:
-                    try:
-                        site_kwargs["latitude"] = float(self._site_latitude)
-                    except (ValueError, TypeError):
-                        pass
-                if self._site_longitude:
-                    try:
-                        site_kwargs["longitude"] = float(self._site_longitude)
-                    except (ValueError, TypeError):
-                        pass
-                entities.append(Entity(site=Site(**site_kwargs)))
-            except Exception as e:
-                print(f"[proxmox-discovery] WARNING: Failed to emit Site→Region entity: {e}", file=sys.stderr)
+        # Standalone Site entity — carries Region link and GPS coordinates.
+        # Always emitted so lat/lon propagate even if they weren't set on initial creation.
+        try:
+            site_kwargs = {"name": self._site_name}
+            if self._region_name:
+                site_kwargs["region"] = Region(name=self._region_name)
+            if self._site_latitude:
+                try:
+                    site_kwargs["latitude"] = float(self._site_latitude)
+                except (ValueError, TypeError):
+                    pass
+            if self._site_longitude:
+                try:
+                    site_kwargs["longitude"] = float(self._site_longitude)
+                except (ValueError, TypeError):
+                    pass
+            entities.append(Entity(site=Site(**site_kwargs)))
+        except Exception as e:
+            print(f"[proxmox-discovery] WARNING: Failed to emit Site entity: {e}", file=sys.stderr)
 
         if self._location_name:
             try:
@@ -451,6 +484,38 @@ class ProxmoxDiscoveryBackend(_Backend):
         except Exception:
             pass
 
+        # Collect network interfaces first to determine primary IPv4
+        collected_ifaces = []
+        all_ipv4s = []
+        if node_data.get("status") == "online":
+            try:
+                network = prox.nodes(node_name).network.get()
+                for net in network:
+                    iface_name = net.get("iface", "")
+                    if _should_skip_iface(iface_name):
+                        continue
+
+                    ips = []
+                    if net.get("address") and net.get("netmask"):
+                        prefix = self._netmask_to_prefix(net["netmask"])
+                        if prefix:
+                            ips.append({"address": net["address"], "prefix": prefix})
+                    if net.get("cidr"):
+                        cidr_prefix = _prefix_len(net["cidr"])
+                        addr = str(net["cidr"]).split("/")[0]
+                        if cidr_prefix and addr:
+                            ips.append({"address": addr, "prefix": cidr_prefix})
+                    if net.get("address6") and net.get("netmask6"):
+                        ips.append({"address": net["address6"], "prefix": _int(net["netmask6"])})
+
+                    hw_addr = net.get("mac", None)
+                    collected_ifaces.append((iface_name, hw_addr, ips))
+                    all_ipv4s.extend(ip for ip in ips if ":" not in ip["address"])
+            except Exception as e:
+                print(f"[proxmox-discovery] WARNING: Failed to get network for node {node_name}: {e}", file=sys.stderr)
+
+        primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
+
         # Physical node — gets rack and tenant (Region linked via standalone Site entity)
         device_kwargs = dict(
             name=node_name,
@@ -477,40 +542,18 @@ class ProxmoxDiscoveryBackend(_Backend):
         tenant = self._tenant_or_none()
         if tenant:
             device_kwargs["tenant"] = tenant
+        if primary_addr:
+            device_kwargs["primary_ip4"] = IPAddress(
+                address=f"{primary_addr}/{primary_prefix}"
+            )
         device = Device(**device_kwargs)
         entities.append(Entity(device=device))
 
-        # Phase 2b: Node network interfaces
-        if node_data.get("status") == "online":
-            device_ref = self._device_ref(node_name, site_name)
-            try:
-                network = prox.nodes(node_name).network.get()
-                for net in network:
-                    iface_name = net.get("iface", "")
-                    if _should_skip_iface(iface_name):
-                        continue
-
-                    ips = []
-                    # IPv4
-                    if net.get("address") and net.get("netmask"):
-                        prefix = self._netmask_to_prefix(net["netmask"])
-                        if prefix:
-                            ips.append({"address": net["address"], "prefix": prefix})
-                    # CIDR format (some Proxmox versions)
-                    if net.get("cidr"):
-                        cidr_prefix = _prefix_len(net["cidr"])
-                        addr = str(net["cidr"]).split("/")[0]
-                        if cidr_prefix and addr:
-                            ips.append({"address": addr, "prefix": cidr_prefix})
-                    # IPv6
-                    if net.get("address6") and net.get("netmask6"):
-                        ips.append({"address": net["address6"], "prefix": _int(net["netmask6"])})
-
-                    hw_addr = net.get("mac", None)
-                    iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
-                    entities.extend(iface_entities)
-            except Exception as e:
-                print(f"[proxmox-discovery] WARNING: Failed to get network for node {node_name}: {e}", file=sys.stderr)
+        # Build Interface + IP entities from collected data
+        device_ref = self._device_ref(node_name, site_name)
+        for iface_name, hw_addr, ips in collected_ifaces:
+            iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
+            entities.extend(iface_entities)
 
         return entities
 
@@ -546,35 +589,12 @@ class ProxmoxDiscoveryBackend(_Backend):
         except Exception as e:
             print(f"[proxmox-discovery] DEBUG: Failed to get config for VM {vmid}: {e}", file=sys.stderr)
 
-        # Virtual machine — gets site (with region) and tenant, no rack
-        device_kwargs = dict(
-            name=vm_name,
-            device_type=DeviceType(
-                model=f"QEMU VM ({cpu_count} vCPU, {mem_gb} GiB)",
-                manufacturer=Manufacturer(name=MANUFACTURER),
-            ),
-            site=Site(name=site_name),
-            role=DeviceRole(name="server"),
-            status=nb_status,
-            description=vm_desc if vm_desc else None,
-            comments=(
-                f"VMID: {vmid}. Host: {node_name}. "
-                f"vCPUs: {cpu_count}, RAM: {mem_gb} GiB. "
-                f"Discovered via Proxmox API."
-            ),
-        )
-        tenant = self._tenant_or_none()
-        if tenant:
-            device_kwargs["tenant"] = tenant
-        device = Device(**device_kwargs)
-        entities.append(Entity(device=device))
-
-        # Phase 2b: Guest agent network interfaces (only for running VMs)
+        # Collect guest agent interfaces to determine primary IPv4
+        collected_ifaces = []
+        all_ipv4s = []
         if vm_status == "running":
-            device_ref = self._device_ref(vm_name, site_name)
             try:
                 agent_ifaces = prox.nodes(node_name).qemu(vmid).agent("network-get-interfaces").get()
-                # Response is {"result": [{...}, ...]} or a list directly
                 iface_list = agent_ifaces.get("result", agent_ifaces) if isinstance(agent_ifaces, dict) else agent_ifaces
 
                 for agent_iface in iface_list:
@@ -587,20 +607,54 @@ class ProxmoxDiscoveryBackend(_Backend):
                     for ip_info in agent_iface.get("ip-addresses", []):
                         addr = ip_info.get("ip-address", "")
                         prefix = _int(ip_info.get("prefix", 0))
-                        ip_type = ip_info.get("ip-address-type", "")
                         if addr and prefix:
                             ips.append({"address": addr, "prefix": prefix})
 
-                    iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
-                    entities.extend(iface_entities)
+                    collected_ifaces.append((iface_name, hw_addr, ips))
+                    all_ipv4s.extend(ip for ip in ips if ":" not in ip["address"])
 
             except Exception as e:
                 err_str = str(e)
-                # QEMU guest agent not running/installed — expected for some VMs
                 if "QEMU guest agent is not running" in err_str or "500" in err_str:
-                    pass  # Silent — many VMs don't have guest agent
+                    pass
                 else:
                     print(f"[proxmox-discovery] DEBUG: No guest agent for VM {vm_name} ({vmid}): {e}", file=sys.stderr)
+
+        primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
+        vm_desc = _sanitize_description(vm_desc)
+
+        # Virtual machine — gets site (with region) and tenant, no rack
+        device_kwargs = dict(
+            name=vm_name,
+            device_type=DeviceType(
+                model=f"QEMU VM ({cpu_count} vCPU, {mem_gb} GiB)",
+                manufacturer=Manufacturer(name=MANUFACTURER),
+            ),
+            site=Site(name=site_name),
+            role=DeviceRole(name="server"),
+            status=nb_status,
+            description=vm_desc,
+            comments=(
+                f"VMID: {vmid}. Host: {node_name}. "
+                f"vCPUs: {cpu_count}, RAM: {mem_gb} GiB. "
+                f"Discovered via Proxmox API."
+            ),
+        )
+        tenant = self._tenant_or_none()
+        if tenant:
+            device_kwargs["tenant"] = tenant
+        if primary_addr:
+            device_kwargs["primary_ip4"] = IPAddress(
+                address=f"{primary_addr}/{primary_prefix}"
+            )
+        device = Device(**device_kwargs)
+        entities.append(Entity(device=device))
+
+        # Build Interface + IP entities from collected data
+        device_ref = self._device_ref(vm_name, site_name)
+        for iface_name, hw_addr, ips in collected_ifaces:
+            iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
+            entities.extend(iface_entities)
 
         return entities
 
@@ -633,32 +687,10 @@ class ProxmoxDiscoveryBackend(_Backend):
         except Exception as e:
             print(f"[proxmox-discovery] DEBUG: Failed to get config for LXC {vmid}: {e}", file=sys.stderr)
 
-        # Container — gets site (with region) and tenant, no rack
-        device_kwargs = dict(
-            name=ct_name,
-            device_type=DeviceType(
-                model=f"LXC Container ({cpu_count} vCPU, {mem_gb} GiB)",
-                manufacturer=Manufacturer(name=MANUFACTURER),
-            ),
-            site=Site(name=site_name),
-            role=DeviceRole(name="container"),
-            status=nb_status,
-            description=ct_desc if ct_desc else None,
-            comments=(
-                f"VMID: {vmid}. Host: {node_name}. "
-                f"vCPUs: {cpu_count}, RAM: {mem_gb} GiB. "
-                f"Discovered via Proxmox API."
-            ),
-        )
-        tenant = self._tenant_or_none()
-        if tenant:
-            device_kwargs["tenant"] = tenant
-        device = Device(**device_kwargs)
-        entities.append(Entity(device=device))
-
-        # Phase 2b: LXC network interfaces (only for running containers)
+        # Collect LXC interfaces to determine primary IPv4
+        collected_ifaces = []
+        all_ipv4s = []
         if ct_status == "running":
-            device_ref = self._device_ref(ct_name, site_name)
             try:
                 lxc_ifaces = prox.nodes(node_name).lxc(vmid).interfaces.get()
 
@@ -669,14 +701,12 @@ class ProxmoxDiscoveryBackend(_Backend):
                     hw_addr = lxc_iface.get("hwaddr", None)
 
                     ips = []
-                    # IPv4
                     if lxc_iface.get("inet"):
                         cidr = lxc_iface["inet"]
                         prefix = _prefix_len(cidr)
                         addr = str(cidr).split("/")[0]
                         if addr and prefix:
                             ips.append({"address": addr, "prefix": prefix})
-                    # IPv6
                     if lxc_iface.get("inet6"):
                         cidr6 = lxc_iface["inet6"]
                         prefix6 = _prefix_len(cidr6)
@@ -684,11 +714,47 @@ class ProxmoxDiscoveryBackend(_Backend):
                         if addr6 and prefix6:
                             ips.append({"address": addr6, "prefix": prefix6})
 
-                    iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
-                    entities.extend(iface_entities)
+                    collected_ifaces.append((iface_name, hw_addr, ips))
+                    all_ipv4s.extend(ip for ip in ips if ":" not in ip["address"])
 
             except Exception as e:
                 print(f"[proxmox-discovery] DEBUG: Failed to get interfaces for LXC {ct_name} ({vmid}): {e}", file=sys.stderr)
+
+        primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
+        ct_desc = _sanitize_description(ct_desc)
+
+        # Container — gets site (with region) and tenant, no rack
+        device_kwargs = dict(
+            name=ct_name,
+            device_type=DeviceType(
+                model=f"LXC Container ({cpu_count} vCPU, {mem_gb} GiB)",
+                manufacturer=Manufacturer(name=MANUFACTURER),
+            ),
+            site=Site(name=site_name),
+            role=DeviceRole(name="container"),
+            status=nb_status,
+            description=ct_desc,
+            comments=(
+                f"VMID: {vmid}. Host: {node_name}. "
+                f"vCPUs: {cpu_count}, RAM: {mem_gb} GiB. "
+                f"Discovered via Proxmox API."
+            ),
+        )
+        tenant = self._tenant_or_none()
+        if tenant:
+            device_kwargs["tenant"] = tenant
+        if primary_addr:
+            device_kwargs["primary_ip4"] = IPAddress(
+                address=f"{primary_addr}/{primary_prefix}"
+            )
+        device = Device(**device_kwargs)
+        entities.append(Entity(device=device))
+
+        # Build Interface + IP entities from collected data
+        device_ref = self._device_ref(ct_name, site_name)
+        for iface_name, hw_addr, ips in collected_ifaces:
+            iface_entities = self._build_iface_entities(iface_name, device_ref, hw_addr, ips)
+            entities.extend(iface_entities)
 
         return entities
 
