@@ -91,7 +91,7 @@ exclude_paths:
 
 ### Test Layout
 
-```
+```text
 platform/services/netbox/deployment/
   tests/
     conftest.py                    # SDK stubs, mock factories

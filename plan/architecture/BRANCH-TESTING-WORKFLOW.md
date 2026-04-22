@@ -11,7 +11,7 @@ All deploy playbooks support a `service_branch` variable (defaults to `main`). T
 
 ## Workflow
 
-```
+```text
 1. Develop          Push feature branch to GitHub
                                 │
 2. Deploy branch    Semaphore deploy template → set Branch = "feat/my-feature"
@@ -108,7 +108,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 ## Validation Templates
 
 | Template | Purpose | When to Use |
-|----------|---------|-------------|
+| -------- | ------- | ----------- |
 | Check Discovery Pipeline | Entity counts, worker logs, VMs, Clusters, primary_ip4 | After deploying worker code changes |
 | Validate All Services | HTTP health checks on all services | After any service deploy |
 | Validate Secrets | Test credentials against live services | After secret or AppRole changes |
