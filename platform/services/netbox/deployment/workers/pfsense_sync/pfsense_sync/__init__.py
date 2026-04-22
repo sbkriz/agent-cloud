@@ -28,7 +28,6 @@ from collections.abc import Iterable
 
 import requests
 import urllib3
-
 from netboxlabs.diode.sdk.ingester import (
     Device,
     DeviceRole,
@@ -116,7 +115,7 @@ class PfSenseSyncBackend(_Backend):
         api_key = scope.get("api_key", "") if isinstance(scope, dict) else ""
 
         if not host or not api_key:
-            print(f"[pfsense-sync] ERROR: host or api_key missing from scope", file=sys.stderr)
+            print("[pfsense-sync] ERROR: host or api_key missing from scope", file=sys.stderr)
             return []
 
         # Config overrides

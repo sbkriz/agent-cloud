@@ -32,10 +32,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Secret scan (trufflehog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
 
       - name: IP/credential audit
         run: |
