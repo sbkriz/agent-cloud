@@ -44,7 +44,7 @@ Or via Semaphore (production):
 
 ### Composable Deploy Pattern
 
-Deployments are orchestrated by Ansible via Semaphore. Each service follows the composable pattern defined in `plan/AUTOMATION-COMPOSABILITY-PLAN.md`:
+Deployments are orchestrated by Ansible via Semaphore. Each service follows the composable pattern defined in `plan/architecture/AUTOMATION-COMPOSABILITY.md`:
 
 1. **Manage secrets** -- Ansible fetches/generates credentials from OpenBao, templates `.env` files
 2. **Start containers** -- deploy.sh handles Docker Compose lifecycle (pull, build, start)
@@ -101,7 +101,13 @@ agent-cloud/
     nemoclaw/             Headless workflow agent
     netclaw/              Network engineering agent
     cowork/               Interactive architect agent
-  plan/                   Architecture, implementation, and composability plans
+  plan/
+    architecture/         Architecture plans (automation, testing, service integration)
+    development/          Development plans (discovery, deployment, migration)
+  docs/                   Developer guides (linting, testing, onboarding)
+  .github/
+    workflows/            CI pipeline (lint, security, test)
+    dependabot.yml        Dependency scanning config
 ```
 
 Each service directory uses the **deployment/ + context/** split:
@@ -138,7 +144,21 @@ Deployments are orchestrated by **Semaphore** running composable Ansible playboo
 
 Playbooks use composable tasks from `platform/playbooks/tasks/` (manage-secrets, manage-diode-credentials, manage-approle, etc.). Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
-See `platform/playbooks/README.md` and `plan/AUTOMATION-COMPOSABILITY-PLAN.md` for architecture details.
+See `platform/playbooks/README.md` and `plan/architecture/AUTOMATION-COMPOSABILITY.md` for architecture details.
+
+## CI/CD and Testing
+
+Every pull request to main runs three automated checks:
+
+| Job | Tools | What it catches |
+|-----|-------|-----------------|
+| **Static Analysis** | Ruff, ShellCheck, ansible-lint, yamllint, hadolint, terraform fmt | Code style, bugs, Ansible best practices, YAML formatting, Dockerfile issues, HCL policy formatting |
+| **Security Scan** | TruffleHog, Bandit, IP/credential grep | Leaked secrets, Python security issues, hardcoded IPs and credentials |
+| **Unit Tests** | pytest (79 tests), BATS (36 tests) | Discovery worker logic, bash helper functions |
+
+Branch testing via Semaphore allows deploying feature branches to production VMs for validation before merging. See `plan/architecture/BRANCH-TESTING-WORKFLOW.md`.
+
+For local setup and the full pre-PR checklist, see `docs/LINTING-AND-TESTING.md`.
 
 ## Technology Stack
 

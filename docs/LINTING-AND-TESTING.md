@@ -6,7 +6,7 @@ This guide covers the automated quality gates that run on every pull request to 
 
 ## CI Pipeline
 
-Every PR triggers two GitHub Actions jobs:
+Every PR triggers three GitHub Actions jobs:
 
 ### Static Analysis
 

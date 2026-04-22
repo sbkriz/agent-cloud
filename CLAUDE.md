@@ -192,13 +192,17 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
 1. Create a feature branch from `main`: `git checkout -b feat/<description>` or `fix/<description>`
 2. Commit changes on the feature branch
-3. **Before creating a PR**, run `/simplify` and `/security-review` on the branch changes
-4. Push the branch: `git push -u origin feat/<description>`
-5. Create a PR via `gh pr create`
-6. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
-7. Address all review findings and push fixes
-8. Confirm all checks pass after fixes
-9. Only then merge the PR
+3. **Before creating a PR**, update documentation:
+   - Update the top-level `README.md` if the PR adds features, services, or changes the repo structure
+   - Update the most relevant sub-directory `README.md` or `CLAUDE.md` for the area changed
+   - Update the root `CLAUDE.md` if the PR adds new conventions, plans, or cross-cutting patterns
+4. Run `/simplify` and `/security-review` on the branch changes
+5. Push the branch: `git push -u origin feat/<description>`
+6. Create a PR via `gh pr create`
+7. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
+8. Address all review findings and push fixes
+9. Confirm all checks pass after fixes
+10. Only then merge the PR
 
 **Never merge a PR before its checks have completed and passed.** This applies to all development: new features, bug fixes, plan updates, and documentation changes.
 
@@ -238,6 +242,26 @@ When a task requires credentials (Semaphore API, NetBox API, OpenBao tokens, etc
 Key paths:
 - `site-config/secrets/semaphore/semaphore_api_token.txt` — Semaphore API token
 - `site-config/inventory/production.yml` — service URLs, host IPs, inventory vars
+
+## Testing and Linting
+
+Every PR to main is gated by GitHub Actions CI (`.github/workflows/lint-and-test.yml`):
+
+- **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
+- **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
+- **Unit Tests**: pytest (79 tests, Python 3.11), BATS (36 tests, Bash)
+
+Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
+
+Tests: `platform/services/netbox/deployment/tests/` (Python), `platform/tests/` (BATS)
+
+See `docs/LINTING-AND-TESTING.md` for local setup and pre-PR checklist.
+
+### Sub-directory Documentation (additional)
+
+- `plan/architecture/TESTING-AND-LINTING-PLAN.md` — Full testing strategy and implementation status
+- `plan/architecture/BRANCH-TESTING-WORKFLOW.md` — Branch deploy and validation workflow
+- `plan/architecture/SERVICE-INTEGRATION-PLAN.md` — Service onboarding checklist
 
 ## Dependencies
 
