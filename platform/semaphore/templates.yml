@@ -8,30 +8,93 @@ templates:
   # ── Deployment ─────────────────────────────────────────────────
   - name: Deploy All Services
     playbook: platform/playbooks/deploy-all.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
 
   - name: Deploy OpenBao
     playbook: platform/playbooks/deploy-openbao.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
 
   - name: Deploy NocoDB
     playbook: platform/playbooks/deploy-nocodb.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
 
   - name: Deploy n8n
     playbook: platform/playbooks/deploy-n8n.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
 
   - name: Deploy Semaphore
     playbook: platform/playbooks/deploy-semaphore.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
 
   - name: Deploy NetBox
     playbook: platform/playbooks/deploy-netbox.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
 
   - name: Deploy NemoClaw
     playbook: platform/playbooks/deploy-nemoclaw.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
 
   - name: Clean Deploy NetBox
     playbook: platform/playbooks/clean-deploy-netbox.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
 
   - name: Deploy Orb Agent
     playbook: platform/playbooks/deploy-orb-agent.yml
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
 
   # pfSense sync runs as an orb-agent worker (every 15 min, no separate playbook)
 
