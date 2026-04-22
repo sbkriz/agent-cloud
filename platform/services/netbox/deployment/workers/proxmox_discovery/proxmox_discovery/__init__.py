@@ -143,7 +143,7 @@ _SENSITIVE_LINE = re.compile(
 def _sanitize_description(desc):
     """Strip lines containing credential keywords from Proxmox descriptions."""
     if not desc:
-        return desc
+        return None
     lines = [ln for ln in desc.splitlines() if not _SENSITIVE_LINE.search(ln)]
     return "\n".join(lines).strip() or None
 

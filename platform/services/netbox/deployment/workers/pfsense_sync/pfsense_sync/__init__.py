@@ -305,48 +305,51 @@ class PfSenseSyncBackend(_Backend):
         entities.append(Entity(device=device))
 
         # Build Interface + IP entities from already-fetched data
-        for iface in ifaces:
-            if not isinstance(iface, dict):
-                continue
+        try:
+            for iface in ifaces:
+                if not isinstance(iface, dict):
+                    continue
 
-            iface_name = iface.get("hwif", iface.get("name", ""))
-            if not iface_name:
-                continue
+                iface_name = iface.get("hwif", iface.get("name", ""))
+                if not iface_name:
+                    continue
 
-            descr = iface.get("descr", "")
-            mac = iface.get("macaddr", "")
-            enabled = bool(iface.get("enable"))
-            mtu = None
-            if iface.get("mtu"):
-                try:
-                    mtu = int(iface["mtu"])
-                except (ValueError, TypeError):
-                    pass
+                descr = iface.get("descr", "")
+                mac = iface.get("macaddr", "")
+                enabled = bool(iface.get("enable"))
+                mtu = None
+                if iface.get("mtu"):
+                    try:
+                        mtu = int(iface["mtu"])
+                    except (ValueError, TypeError):
+                        pass
 
-            iface_entity = Interface(
-                name=iface_name,
-                device=device_ref,
-                type="other",
-                enabled=enabled,
-                primary_mac_address=mac if mac else None,
-                mtu=mtu,
-                description=descr or f"pfSense interface {iface_name}",
-            )
-            entities.append(Entity(interface=iface_entity))
-
-            ipaddr = iface.get("ipaddr", "")
-            subnet = iface.get("subnet", "")
-            if ipaddr and subnet and _is_valid_ip(ipaddr):
-                ip_entity = IPAddress(
-                    address=f"{ipaddr}/{subnet}",
-                    assigned_object_interface=Interface(
-                        name=iface_name,
-                        device=device_ref,
-                    ),
-                    status="active",
-                    description=f"{descr} ({iface_name})" if descr else f"pfSense {iface_name}",
+                iface_entity = Interface(
+                    name=iface_name,
+                    device=device_ref,
+                    type="other",
+                    enabled=enabled,
+                    primary_mac_address=mac if mac else None,
+                    mtu=mtu,
+                    description=descr or f"pfSense interface {iface_name}",
                 )
-                entities.append(Entity(ip_address=ip_entity))
+                entities.append(Entity(interface=iface_entity))
+
+                ipaddr = iface.get("ipaddr", "")
+                subnet = iface.get("subnet", "")
+                if ipaddr and subnet and _is_valid_ip(ipaddr):
+                    ip_entity = IPAddress(
+                        address=f"{ipaddr}/{subnet}",
+                        assigned_object_interface=Interface(
+                            name=iface_name,
+                            device=device_ref,
+                        ),
+                        status="active",
+                        description=f"{descr} ({iface_name})" if descr else f"pfSense {iface_name}",
+                    )
+                    entities.append(Entity(ip_address=ip_entity))
+        except Exception as e:
+            print(f"[pfsense-sync] WARNING: Failed to build interface entities: {e}", file=sys.stderr)
 
         # Gateways as IP addresses
         try:
