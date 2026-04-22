@@ -63,6 +63,7 @@
       register: local_content
 
     - name: "Upload seed ISO via uri module"
+      when: local_content.json.data | selectattr('volid', 'equalto', _seed_volid) | list | length == 0
       block:
         - name: "Attempt upload via uri module"
           ansible.builtin.uri:
@@ -89,7 +90,6 @@
           register: upload_fallback
           changed_when: true
           no_log: true
-      when: local_content.json.data | selectattr('volid', 'equalto', _seed_volid) | list | length == 0
 
     - name: "Create template VM"
       ansible.builtin.uri:
