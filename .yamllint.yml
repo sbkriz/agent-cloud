@@ -7,8 +7,8 @@ rules:
     allow-non-breakable-inline-mappings: true
   truthy:
     allowed-values: ["true", "false", "yes", "no"]
-  trailing-spaces: disable
-  new-line-at-end-of-file: disable
+  trailing-spaces: enable
+  new-line-at-end-of-file: enable
 
 ignore:
   - netbox-docker/
