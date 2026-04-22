@@ -19,7 +19,7 @@ jobs:
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: platform/
-          severity: warning
+          severity: error
 
       - name: YAML lint
         run: pip install yamllint && yamllint -c .yamllint.yml .
