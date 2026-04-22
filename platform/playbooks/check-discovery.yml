@@ -53,6 +53,39 @@
       ansible.builtin.debug:
         msg: "{{ _nb_stats.stdout_lines | default(['Failed to query NetBox']) }}"
 
+    - name: Get VirtualMachine, Cluster, and primary_ip4 stats
+      ansible.builtin.command:
+        cmd: >-
+          docker exec netbox-netbox-1
+          /opt/netbox/netbox/manage.py shell -c
+          "from virtualization.models import VirtualMachine, Cluster, ClusterType;
+          from dcim.models import Device, Site;
+          print('=== Virtualization ===');
+          clusters = Cluster.objects.all();
+          print(f'Clusters: {clusters.count()}');
+          [print(f'  {c.name}  type={c.type.name if c.type else \"?\"} site={c.scope.name if hasattr(c, \"scope\") and c.scope else \"?\"}') for c in clusters];
+          vms = VirtualMachine.objects.all();
+          print(f'VirtualMachines: {vms.count()}');
+          [print(f'  {v.name:30s}  cluster={v.cluster.name if v.cluster else \"?\":20s}  status={v.status}  vcpus={v.vcpus}  mem={v.memory}MB  disk={v.disk}MB') for v in vms[:50]];
+          print();
+          print('=== Primary IPv4 ===');
+          devs_pip = Device.objects.exclude(primary_ip4__isnull=True);
+          print(f'Devices with primary_ip4: {devs_pip.count()}/{Device.objects.count()}');
+          [print(f'  {d.name:30s}  primary_ip4={d.primary_ip4}') for d in devs_pip[:20]];
+          vms_pip = VirtualMachine.objects.exclude(primary_ip4__isnull=True);
+          print(f'VMs with primary_ip4: {vms_pip.count()}/{vms.count()}');
+          [print(f'  {v.name:30s}  primary_ip4={v.primary_ip4}') for v in vms_pip[:20]];
+          print();
+          print('=== Site GPS ===');
+          [print(f'  {s.name}  lat={s.latitude}  lon={s.longitude}') for s in Site.objects.all()]"
+      register: _vm_stats
+      changed_when: false
+      ignore_errors: true
+
+    - name: Show virtualization and primary_ip4 stats
+      ansible.builtin.debug:
+        msg: "{{ _vm_stats.stdout_lines | default(['Failed to query virtualization data']) }}"
+
     - name: Check Phase B seed data (Region, Location, Rack, Tenant)
       ansible.builtin.command:
         cmd: >-
