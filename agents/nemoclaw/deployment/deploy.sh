@@ -65,9 +65,18 @@ n=d['defaultSandbox']; print(n, ','.join(d['sandboxes'][n]['policies']))
 ")
 
 # Load secrets into env vars (NemoClaw reads these during onboard)
-[ -f "$SECRETS_DIR/nvidia-api-key.txt" ] && export NVIDIA_API_KEY=$(cat "$SECRETS_DIR/nvidia-api-key.txt" | tr -d '[:space:]')
-[ -f "$SECRETS_DIR/gemini-api-key.txt" ] && export GEMINI_API_KEY=$(cat "$SECRETS_DIR/gemini-api-key.txt" | tr -d '[:space:]')
-[ -f "$SECRETS_DIR/discord-bot-token.txt" ] && export DISCORD_BOT_TOKEN=$(cat "$SECRETS_DIR/discord-bot-token.txt" | tr -d '[:space:]')
+if [ -f "$SECRETS_DIR/nvidia-api-key.txt" ]; then
+  NVIDIA_API_KEY=$(tr -d '[:space:]' < "$SECRETS_DIR/nvidia-api-key.txt")
+  export NVIDIA_API_KEY
+fi
+if [ -f "$SECRETS_DIR/gemini-api-key.txt" ]; then
+  GEMINI_API_KEY=$(tr -d '[:space:]' < "$SECRETS_DIR/gemini-api-key.txt")
+  export GEMINI_API_KEY
+fi
+if [ -f "$SECRETS_DIR/discord-bot-token.txt" ]; then
+  DISCORD_BOT_TOKEN=$(tr -d '[:space:]' < "$SECRETS_DIR/discord-bot-token.txt")
+  export DISCORD_BOT_TOKEN
+fi
 
 # Helper: run inside the sandbox
 run_in_sandbox() {

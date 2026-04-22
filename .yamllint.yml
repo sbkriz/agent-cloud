@@ -1,0 +1,16 @@
+---
+extends: relaxed
+
+rules:
+  line-length:
+    max: 200
+    allow-non-breakable-inline-mappings: true
+  truthy:
+    allowed-values: ["true", "false", "yes", "no"]
+  trailing-spaces: enable
+  new-line-at-end-of-file: enable
+
+ignore:
+  - netbox-docker/
+  - platform/services/netbox/deployment/netbox-docker/
+  - .github/

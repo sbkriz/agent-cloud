@@ -19,7 +19,7 @@ _COMMON_SH_LOADED=1
 # ─── Directory layout ─────────────────────────────────────────────
 # Callers must set SCRIPT_DIR (or ROOT_DIR for discovery scripts) before sourcing.
 # We derive everything else from that.
-LIB_DIR="${SCRIPT_DIR}/lib"
+export LIB_DIR="${SCRIPT_DIR}/lib"
 ENV_DIR="${SCRIPT_DIR}/env"
 SECRETS_DIR="${SCRIPT_DIR}/secrets"
 DOT_ENV="${SCRIPT_DIR}/.env"

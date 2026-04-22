@@ -159,7 +159,7 @@
           tags: "{{ _tags }}"
         status_code: [200]
 
-    - name: "Resize disk to {{ _disk }}"
+    - name: "Resize disk to size — {{ _disk }}"
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/resize"
         method: PUT

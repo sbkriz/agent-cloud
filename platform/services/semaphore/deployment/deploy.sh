@@ -48,13 +48,13 @@ step_bootstrap_credentials() {
   fi
 
   # Login to get session cookie
-  local cookie_jar login_response
+  local cookie_jar _login_response
   cookie_jar=$(mktemp)
-  trap "rm -f '$cookie_jar'" EXIT INT TERM
+  trap 'rm -f "$cookie_jar"' EXIT INT TERM
 
   local login_payload
   login_payload=$(jq -n --arg pass "$admin_pass" '{"auth":"admin","password":$pass}')
-  login_response=$(curl -sf -c "$cookie_jar" -X POST "${SEMAPHORE_URL}/api/auth/login" \
+  _login_response=$(curl -sf -c "$cookie_jar" -X POST "${SEMAPHORE_URL}/api/auth/login" \
     -H "Content-Type: application/json" \
     --data-raw "$login_payload" 2>/dev/null) || {
     warn "  Login failed — API token creation deferred."

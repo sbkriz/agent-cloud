@@ -87,7 +87,6 @@
           'secret/data/services/ssh:private_key',
           url=_bao_url, auth_method='approle',
           role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
-      run_once: true
 
     - name: "Write key to temp file"
       ansible.builtin.tempfile:
@@ -95,7 +94,6 @@
         prefix: ".mgmt_key_"
       register: _key_file
       delegate_to: localhost
-      run_once: true
 
     - name: "Set key contents"
       ansible.builtin.copy:
@@ -103,10 +101,9 @@
         dest: "{{ _key_file.path }}"
         mode: "0600"
       delegate_to: localhost
-      run_once: true
       no_log: true
 
-    - name: "Test SSH key auth to {{ service_name }}"
+    - name: "Test SSH key auth to host — {{ service_name }}"
       ansible.builtin.command:
         cmd: >
           ssh -i {{ _key_file.path }}
@@ -131,4 +128,3 @@
         path: "{{ _key_file.path }}"
         state: absent
       delegate_to: localhost
-      run_once: true

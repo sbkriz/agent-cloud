@@ -1,0 +1,37 @@
+---
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+
+  - package-ecosystem: "pip"
+    directory: "/platform/services/netbox/deployment/workers/proxmox_discovery"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+
+  - package-ecosystem: "pip"
+    directory: "/platform/services/netbox/deployment/workers/pfsense_sync"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "ci"
+
+  - package-ecosystem: "docker"
+    directory: "/platform/services/netbox/deployment"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"

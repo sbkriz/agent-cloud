@@ -7,7 +7,7 @@
 #   _bao_auth        — authenticated vault token
 #   _bao_url         — OpenBao address
 
-- name: "Read existing secret at {{ _vault_path }}"
+- name: "Read existing secret at path — {{ _vault_path }}"
   ansible.builtin.uri:
     url: "{{ _bao_url }}/v1/{{ _vault_path }}"
     method: GET
@@ -18,7 +18,7 @@
   delegate_to: localhost
   no_log: true
 
-- name: "Update api_token at {{ _vault_path }}"
+- name: "Update api_token at path — {{ _vault_path }}"
   ansible.builtin.uri:
     url: "{{ _bao_url }}/v1/{{ _vault_path }}"
     method: POST
@@ -31,6 +31,6 @@
   delegate_to: localhost
   no_log: true
 
-- name: "Updated {{ _vault_path }}"
+- name: "Vault field updated — {{ _vault_path }}"
   ansible.builtin.debug:
     msg: "Updated api_token and token_id at {{ _vault_path }}"

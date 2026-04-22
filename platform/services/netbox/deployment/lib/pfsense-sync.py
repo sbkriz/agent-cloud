@@ -30,9 +30,9 @@ Environment variables (override defaults):
 """
 
 import argparse
-import json
 import os
 import sys
+
 import urllib3
 import yaml
 
@@ -130,8 +130,15 @@ PLATFORM_BASE = "pfSense"
 def build_entities(pfsense):
     """Query pfSense API and build Diode SDK entities."""
     from netboxlabs.diode.sdk.ingester import (
-        Device, DeviceRole, DeviceType, Entity, Interface, IPAddress,
-        Manufacturer, Platform, Site,
+        Device,
+        DeviceRole,
+        DeviceType,
+        Entity,
+        Interface,
+        IPAddress,
+        Manufacturer,
+        Platform,
+        Site,
     )
 
     entities = []

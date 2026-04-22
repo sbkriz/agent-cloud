@@ -41,7 +41,6 @@
         status_code: [200]
       register: _bao_auth
       delegate_to: localhost
-      run_once: true
       no_log: true
 
     - name: "Read and update each path"

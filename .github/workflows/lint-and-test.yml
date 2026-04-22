@@ -1,0 +1,87 @@
+---
+name: Lint and Test
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python lint (ruff)
+        uses: astral-sh/ruff-action@v3
+
+      - name: Shell lint (shellcheck)
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: ./
+          severity: warning
+          ignore_paths: netbox-docker
+
+      - name: Ansible lint
+        run: pip install ansible-lint && ansible-lint platform/playbooks/
+
+      - name: YAML lint
+        run: pip install yamllint && yamllint -c .yamllint.yml .
+
+      - name: Dockerfile lint (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: platform/services/netbox/deployment/Dockerfile-Plugins
+          failure-threshold: warning
+
+      - name: HCL format check
+        uses: hashicorp/setup-terraform@v3
+      - run: find platform/services/openbao -name '*.hcl' -exec terraform fmt -check {} +
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan (trufflehog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
+
+      - name: IP/credential audit
+        run: |
+          ! git diff origin/main...HEAD | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
+          ! git diff origin/main...HEAD | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
+
+      - name: Python security lint (bandit)
+        run: pip install bandit && bandit -r platform/services/netbox/deployment/workers/ platform/services/netbox/deployment/lib/pfsense-sync.py -s B101,B110 -q
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest netboxlabs-diode-sdk proxmoxer requests
+
+      - name: Run Python tests
+        working-directory: platform/services/netbox/deployment
+        env:
+          PYTHONPATH: workers/proxmox_discovery:workers/pfsense_sync
+        run: pytest tests/ -v
+
+      - name: Install BATS
+        run: |
+          sudo apt-get install -y -qq bats > /dev/null 2>&1
+
+      - name: Run Bash tests
+        run: bats platform/tests/

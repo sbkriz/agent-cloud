@@ -86,7 +86,7 @@
       when: dry_run | bool
 
     # ── Cleanup Duplicates ──────────────────────────────────────
-    - name: "Cleanup duplicate devices (strategy: {{ duplicate_strategy }})"
+    - name: "Cleanup duplicate devices with strategy — {{ duplicate_strategy }}"
       ansible.builtin.shell: |
         {{ _manage }} << PYSCRIPT
         from dcim.models import Device
@@ -132,7 +132,7 @@
       when: cleanup_duplicates | bool
 
     # ── Replace Device ──────────────────────────────────────────
-    - name: "Replace device '{{ replace_device_old }}' → '{{ replace_device_new }}'"
+    - name: "Replace device with new entry"
       ansible.builtin.shell: |
         {{ _manage }} << PYSCRIPT
         from dcim.models import Device
@@ -165,7 +165,7 @@
       when: replace_device_old | length > 0 and replace_device_new | length > 0
 
     # ── Migrate Region ──────────────────────────────────────────
-    - name: "Migrate sites from region '{{ migrate_region_old }}' → '{{ migrate_region_new }}'"
+    - name: "Migrate sites between regions"
       ansible.builtin.shell: |
         {{ _manage }} << PYSCRIPT
         from dcim.models import Region, Site
@@ -210,7 +210,7 @@
       when: migrate_region_old | length > 0 and migrate_region_new | length > 0
 
     # ── Migrate Rack ────────────────────────────────────────────
-    - name: "Migrate devices from rack '{{ migrate_rack_old }}' → '{{ migrate_rack_new }}'"
+    - name: "Migrate devices between racks"
       ansible.builtin.shell: |
         {{ _manage }} << PYSCRIPT
         from dcim.models import Rack, Device

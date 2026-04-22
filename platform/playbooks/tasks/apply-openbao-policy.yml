@@ -20,7 +20,7 @@
   run_once: true
   no_log: true
 
-- name: "Apply policy: {{ _policy_name }}"
+- name: "Apply policy — {{ _policy_name }}"
   ansible.builtin.uri:
     url: "{{ _bao_url }}/v1/sys/policies/acl/{{ _policy_name }}"
     method: PUT

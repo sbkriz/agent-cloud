@@ -7,7 +7,7 @@ PLUGINS = ["netbox_diode_plugin"]
 # at /run/secrets/netbox_to_diode (see docker-compose.yml).
 _netbox_to_diode_secret = ""
 try:
-    with open("/run/secrets/netbox_to_diode", "r") as _f:
+    with open("/run/secrets/netbox_to_diode") as _f:
         _netbox_to_diode_secret = _f.readline().strip()
 except OSError:
     pass

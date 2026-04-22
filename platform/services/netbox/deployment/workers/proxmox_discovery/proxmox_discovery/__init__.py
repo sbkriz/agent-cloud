@@ -35,8 +35,6 @@ import sys
 from collections.abc import Iterable
 from urllib.parse import urlparse
 
-from proxmoxer import ProxmoxAPI
-
 from netboxlabs.diode.sdk.ingester import (
     Cluster,
     ClusterType,
@@ -56,6 +54,7 @@ from netboxlabs.diode.sdk.ingester import (
     VirtualMachine,
     VMInterface,
 )
+from proxmoxer import ProxmoxAPI
 from worker.backend import Backend as _Backend
 from worker.models import Metadata, Policy
 
@@ -92,9 +91,7 @@ def _should_skip_iface(name):
         return True
     if name in _SKIP_IFACE_NAMES:
         return True
-    if name.startswith(_SKIP_IFACE_PREFIXES):
-        return True
-    return False
+    return bool(name.startswith(_SKIP_IFACE_PREFIXES))
 
 
 def _iface_type(name):
@@ -107,7 +104,7 @@ def _iface_type(name):
         return "virtual"
     if name.startswith("wg"):
         return "virtual"
-    if name.startswith("eth") or name.startswith("en"):
+    if name.startswith(("eth", "en")):
         return "other"
     return "other"
 
@@ -129,7 +126,7 @@ def _reverse_dns(ip, timeout=0.5):
         socket.setdefaulttimeout(timeout)
         hostname, _, _ = socket.gethostbyaddr(ip)
         return hostname
-    except (socket.herror, socket.gaierror, socket.timeout, OSError):
+    except (TimeoutError, socket.herror, socket.gaierror, OSError):
         return ""
     finally:
         socket.setdefaulttimeout(old_timeout)
@@ -160,7 +157,7 @@ def _pick_primary_ipv4(ips):
             continue
         if ":" in addr:
             continue
-        if addr.startswith("127.") or addr.startswith("169.254."):
+        if addr.startswith(("127.", "169.254.")):
             continue
         return addr, prefix
     return None, None
@@ -174,7 +171,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             name="proxmox-discovery",
             app_name="proxmox-discovery",
             app_version="3.0.0",
-            description="Proxmox VE API → NetBox via Diode (nodes as Device, VMs/LXC as VirtualMachine, Cluster, primary_ip4)",
+            description="Proxmox VE API → NetBox via Diode (Device, VirtualMachine, Cluster)",
         )
 
     def run(self, policy_name: str, policy: Policy) -> Iterable[Entity]:
@@ -244,7 +241,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             user, token_name = token_id.split("!", 1)
         else:
             user = token_id
-            token_name = "discovery"
+            token_name = "discovery"  # nosec B105 — token name (identifier), not a secret
 
         return ProxmoxAPI(
             host,
@@ -448,7 +445,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             type=_iface_type(iface_name),
             enabled=True,
             primary_mac_address=hw_addr if hw_addr else None,
-            description=f"Discovered via Proxmox API",
+            description="Discovered via Proxmox API",
         )
         entities.append(Entity(interface=iface))
 
@@ -457,7 +454,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             prefix = ip_info.get("prefix")
             if not addr or not prefix:
                 continue
-            if addr.startswith("fe80:") or addr.startswith("127.") or addr == "::1":
+            if addr.startswith(("fe80:", "127.")) or addr == "::1":
                 continue
 
             dns_name = _reverse_dns(addr)
@@ -502,7 +499,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             virtual_machine=vm_ref,
             enabled=True,
             primary_mac_address=hw_addr if hw_addr else None,
-            description=f"Discovered via Proxmox API",
+            description="Discovered via Proxmox API",
         )
         entities.append(Entity(vm_interface=vm_iface))
 
@@ -511,7 +508,7 @@ class ProxmoxDiscoveryBackend(_Backend):
             prefix = ip_info.get("prefix")
             if not addr or not prefix:
                 continue
-            if addr.startswith("fe80:") or addr.startswith("127.") or addr == "::1":
+            if addr.startswith(("fe80:", "127.")) or addr == "::1":
                 continue
 
             dns_name = _reverse_dns(addr)
@@ -683,7 +680,10 @@ class ProxmoxDiscoveryBackend(_Backend):
         if vm_status == "running":
             try:
                 agent_ifaces = prox.nodes(node_name).qemu(vmid).agent("network-get-interfaces").get()
-                iface_list = agent_ifaces.get("result", agent_ifaces) if isinstance(agent_ifaces, dict) else agent_ifaces
+                if isinstance(agent_ifaces, dict):
+                    iface_list = agent_ifaces.get("result", agent_ifaces)
+                else:
+                    iface_list = agent_ifaces
 
                 for agent_iface in iface_list:
                     if not isinstance(agent_iface, dict):
@@ -817,7 +817,10 @@ class ProxmoxDiscoveryBackend(_Backend):
                     all_ipv4s.extend(ip for ip in ips if ":" not in ip["address"])
 
             except Exception as e:
-                print(f"[proxmox-discovery] DEBUG: Failed to get interfaces for LXC {ct_name} ({vmid}): {e}", file=sys.stderr)
+                print(
+                    f"[proxmox-discovery] DEBUG: Failed to get interfaces for LXC {ct_name} ({vmid}): {e}",
+                    file=sys.stderr,
+                )
 
         primary_addr, primary_prefix = _pick_primary_ipv4(all_ipv4s)
         ct_desc = _sanitize_description(ct_desc)

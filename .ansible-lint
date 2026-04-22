@@ -1,0 +1,12 @@
+---
+skip_list:
+  - command-instead-of-module
+  - no-changed-when
+  - yaml[line-length]
+  - name[missing]
+
+exclude_paths:
+  - netbox-docker/
+  - .github/
+  - platform/services/netbox/deployment/netbox-docker/
+  - platform/playbooks/requirements.yml

@@ -71,12 +71,18 @@
         dest: "/home/{{ ansible_user }}/{{ service_name }}"
         state: link
         force: true
-      ignore_errors: true
+      register: _symlink_result
+      failed_when:
+        - _symlink_result is failed
+        - _symlink_result.msg is defined
+        - "'permission denied' in (_symlink_result.msg | lower)"
 
     - name: "Manage secrets and template env files"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
     - name: "Write compose bind-mount secret (temporary — deleted after container start)"
+      vars:
+        _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
       block:
         - name: "Ensure secrets/ dir for compose mount"
           ansible.builtin.file:
@@ -90,8 +96,6 @@
             dest: "{{ _deploy_dir }}/secrets/netbox_to_diode_client_secret.txt"
             mode: "0644"
           no_log: true
-      vars:
-        _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
 # ── Phase 2: Infrastructure (deploy.sh — containers up + healthy) ────
 - name: "Phase 2: Start NetBox containers"
@@ -141,6 +145,7 @@
 
     - name: "Verify Diode plugin can read the bind-mount secret"
       ansible.builtin.shell: |
+        set -o pipefail
         {{ container_engine | default('docker') }} exec netbox{{ _sep }}netbox{{ _sep }}1 \
           cat /run/secrets/netbox_to_diode 2>&1 | wc -c
       vars:
