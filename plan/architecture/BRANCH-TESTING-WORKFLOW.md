@@ -99,10 +99,11 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
 
 ## Safety Properties
 
-1. **Non-destructive**: The branch deploy only changes the code on the target VM. It does not modify OpenBao secrets, database state, or persistent volumes.
-2. **Instant rollback**: Re-running the deploy template without `service_branch` reverts to main within ~60 seconds.
+1. **Low risk**: The branch deploy changes code on the target VM but does not modify OpenBao secrets, database state, or persistent volumes. However, if branch code runs migrations or alters container state, those effects may persist after rollback.
+2. **Fast rollback**: Re-running the deploy template with `service_branch` set to `main` typically reverts within a few minutes. Rollback time depends on git pull speed and container restart duration.
 3. **No merge required**: Branch code can be validated in production without touching main. If it fails, rollback and fix.
 4. **Composable with validation**: After deploying a branch, run any validation template (Check Discovery, Validate All, Validate Secrets) to confirm the change works.
+5. **Caveat**: Branch deploys that include database migrations, destructive container operations, or schema changes may not be fully reversible by simply re-deploying main. Test those changes on a dedicated test environment when possible.
 
 ## Validation Templates
 

@@ -210,7 +210,7 @@ jobs:
       - name: Python lint (ruff)
         uses: astral-sh/ruff-action@v3
       - name: Shell lint (shellcheck)
-        uses: ludeeus/action-shellcheck@master
+        uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: platform/
       - name: Ansible lint
