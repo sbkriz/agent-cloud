@@ -1,7 +1,7 @@
 # NetBox Discovery Expansion Plan
 
 **Date:** 2026-04-04 (original) → **2026-04-19** (revised after Phase 2 completion, duplication incident, and cleanup tooling)
-**Status:** IN PROGRESS — Phases 1, 2a, 2b complete. Phase 2c (data enrichment) next.
+**Status:** COMPLETE — All phases through 2c done. Phase D (SNMPv3) and E (LLDP) deferred/optional.
 
 ---
 
@@ -84,11 +84,10 @@ graph TB
 - **Seed data templating** — Region, site, location, tenant, per-node rack assignments all templated from inventory
 - **Cleanup tooling** — Generic parameterized `cleanup-netbox.yml` playbook (Semaphore Template 57)
 
-**Gaps (Phase 2c targets):**
-- **Primary IPv4** — Not set on any devices. Workers create IPAddress entities but don't assign `Device.primary_ip4`
-- **Cluster modeling** — Proxmox cluster not represented. VMs modeled as Device instead of VirtualMachine
-- **GPS coordinates** — `site_latitude`/`site_longitude` in worker code but showing None in NetBox (likely Diode reconciler timing or config propagation issue)
-- **Credential leakage** — Proxmox VM descriptions contain plaintext passwords synced to NetBox. Needs sanitization filter in worker
+**Remaining gaps:**
+- **GPS coordinates** — Code fix deployed (2026-04-21): Site entity now always emitted with lat/lon. Verify on next discovery cycle; fall back to Django shell if Diode reconciler doesn't update existing Site scalars
+- **Post-migration cleanup** — After deploying v3.0.0, old Device entries for VMs/LXC will coexist with new VirtualMachine entities. Run cleanup-netbox.yml to remove the orphaned Devices
+- **LLDP topology (Phase E)** — Plan and playbooks ready on `feat/lldp-hypervisor-setup` branch. Requires test Proxmox cluster before deploying lldpd to production hypervisors
 
 **Post-cleanup state (32 devices):**
 - 1 region (US East), 1 site (Uhstray.io Datacenter), 1 location (Server Room)
@@ -140,58 +139,38 @@ Created `platform/playbooks/cleanup-netbox.yml` — generic parameterized cleanu
 
 ---
 
-## Active Phase
+## Completed Phase
 
-### Phase 2c: Data Enrichment
+### Phase 2c: Data Enrichment — COMPLETE (2026-04-21)
 
-**Priority:** IMMEDIATE — closes the remaining data quality gaps before adding new discovery backends
-**Effort:** Medium (worker code changes + validation)
-**Impact:** High (completes the device data model)
+Closes the remaining data quality gaps before adding new discovery backends.
 
-#### 2c-i: Primary IPv4 Assignment
+#### 2c-i: Primary IPv4 Assignment — COMPLETE
 
-**Problem:** Both workers create IPAddress entities and Interface entities, but neither sets `Device.primary_ip4`. Every device in NetBox shows "Primary IPv4: —".
+Both workers now set `Device.primary_ip4` on every device. Restructured all device builders to collect interface/IP data BEFORE creating the Device entity, enabling `primary_ip4=IPAddress(address=...)` in the initial emit.
 
-**Fix:** After creating interfaces and IPs for a device, identify the management IP and include `primary_ip4=IPAddress(address="x.x.x.x/24")` in the Device entity kwargs.
+- **proxmox_discovery v3.0.0**: `_build_node()` uses first IPv4 from management bridge interfaces. `_build_vm()` uses first guest agent IPv4. `_build_lxc()` uses first container IPv4. Helper `_pick_primary_ipv4()` skips loopback, link-local, and IPv6.
+- **pfsense_sync v1.3.0**: Queries interfaces before device creation, finds LAN interface by `descr == "LAN"`, sets its IP as primary.
 
-**Implementation:**
-- **proxmox_discovery**: For nodes, use the IP from `node.network` (management bridge). For VMs/LXC, use the first guest agent IP or fall back to the IP from site-config inventory
-- **pfsense_sync**: Use the LAN interface IP (already known from pfSense API response)
+#### 2c-ii: Proxmox Cluster Modeling — COMPLETE (2026-04-21)
 
-**Diode SDK:** `Device(primary_ip4=IPAddress(address="192.168.1.110/24"))` — supported since SDK v1.10.0
-
-#### 2c-ii: Proxmox Cluster Modeling
-
-**Problem:** The Proxmox cluster isn't represented in NetBox. VMs and LXC containers are modeled as Device (physical equipment) instead of VirtualMachine (virtualized workload). No cluster→node→VM hierarchy exists.
-
-**Fix:** Add Cluster, ClusterType, and VirtualMachine entities to the proxmox_discovery worker.
-
-**Implementation:**
-1. Import `Cluster`, `ClusterType`, `ClusterGroup`, `VirtualMachine` from Diode SDK
-2. Create a `Cluster` entity (name from Proxmox API cluster status, type: "Proxmox VE")
-3. Keep physical nodes as `Device` (role: hypervisor) — these are real hardware
-4. Switch VMs from `Device` to `VirtualMachine` with `cluster` assignment
-5. Switch LXC containers from `Device` to `VirtualMachine` (role: container) with `cluster` assignment
+proxmox_discovery v3.0.0: VMs and LXC containers now emit as `VirtualMachine` entities (not `Device`), assigned to a `Cluster` entity queried from the Proxmox API (`prox.cluster.status.get()`). Physical nodes remain as `Device` (role: hypervisor).
 
 **Entity mapping change:**
 ```
 Before:  Node → Device(hypervisor)    VM → Device(server)     LXC → Device(container)
 After:   Node → Device(hypervisor)    VM → VirtualMachine     LXC → VirtualMachine
-         Cluster("pve-cluster", type="Proxmox VE", site=...)
+         Cluster(name from API, type="Proxmox VE", scope_site=...)
 ```
 
-**Risk:** Switching VM/LXC from Device to VirtualMachine may create duplicates if Diode doesn't reconcile across entity types. May need cleanup run after first deployment. Test with `dry_run` logging before pushing to Diode.
+New SDK imports: `Cluster`, `ClusterType`, `VirtualMachine`, `VMInterface`. VMs/LXC now use `VMInterface` (not `Interface`) and `assigned_object_vm_interface` (not `assigned_object_interface`) for IP linking. Resource fields (`vcpus`, `memory`, `disk`) are set directly on VirtualMachine instead of in comments/device_type strings.
 
-#### 2c-iii: GPS Coordinates
+**Migration required after deployment:** Old Device entries for VMs/LXC will persist (Diode is additive-only). Run `cleanup-netbox.yml` (Semaphore Template 57) to remove orphaned Device entities that now exist as VirtualMachines.
 
-**Problem:** `site_latitude` and `site_longitude` are in the worker code and inventory, but NetBox shows `lat=None lon=None` on the site.
+#### 2c-iii: GPS Coordinates — FIXED (code-side)
 
-**Diagnosis needed:**
-1. Verify the values propagate from `agent.yaml.j2` template → resolved config → worker `config` object
-2. Check if Diode reconciler ignores float fields on existing Site entities (reconciler may skip updates to non-null-to-null transitions but might also skip null-to-value)
-3. If Diode won't set coords, fall back to Django shell one-liner via Semaphore
+Root cause: the standalone Site entity carrying `latitude`/`longitude` was only emitted when `self._region_name` was set. If the Site was created before the region was configured, coords were never sent. Fixed in both workers to always emit the Site entity with available coords regardless of region. If Diode reconciler still doesn't update existing Site scalar fields, fall back to Django shell:
 
-**Fallback fix (Django shell):**
 ```python
 from dcim.models import Site
 s = Site.objects.get(name="Uhstray.io Datacenter")
@@ -199,33 +178,121 @@ s.latitude, s.longitude = 41.19481797890624, -74.43649455017179
 s.save()
 ```
 
-#### 2c-iv: Description Sanitization
+#### 2c-iv: Description Sanitization — COMPLETE
 
-**Problem:** Proxmox VM descriptions contain plaintext credentials (root passwords, service passwords) that get synced verbatim to NetBox device descriptions.
-
-**Fix:** Add a sanitization filter in `_build_vm()` and `_build_lxc()` that strips or redacts lines matching common credential patterns before passing to Diode.
-
-**Pattern:** Strip lines matching `password`, `passwd`, `secret`, `token`, `key` (case-insensitive) from descriptions.
+Added `_sanitize_description()` to the proxmox_discovery worker. Strips lines containing credential keywords (`password`, `passwd`, `secret`, `token`, `key`, case-insensitive regex) from VM and LXC descriptions before Diode ingestion. Returns `None` for fully-redacted descriptions.
 
 ---
 
 ## Remaining Phases
 
-### Phase D: SNMPv3 Upgrade (deferred)
+### Phase D: SNMPv3 Upgrade — moved to [SNMPV3-UPGRADE-PLAN.md](SNMPV3-UPGRADE-PLAN.md)
 
-**Priority:** LOW — security hardening for existing SNMP, not blocking any functionality
-**Effort:** Medium (credential setup + snmpd config on pfSense)
-**Impact:** Medium (encrypted SNMP on the wire)
+### Phase E: LLDP Topology Discovery — PLANNED (awaiting test cluster)
 
-Upgrade from SNMPv2c (plaintext community string) to SNMPv3 (SHA auth + AES encryption). Store credentials in OpenBao at `secret/services/discovery/snmp_v3`. Update `agent.yaml.j2` SNMP policies. **Deferred** because the Proxmox API (Phase 2) already provides most device data, and pfSense REST API provides richer data than SNMP.
+**Priority:** MEDIUM — completes the physical topology picture
+**Effort:** Medium (Ansible automation + Diode push script)
+**Impact:** High (reveals physical cable connections between all devices)
+**Blocked by:** Requires installing lldpd on Proxmox hypervisors. Playbooks are on branch `feat/lldp-hypervisor-setup` — to be tested on a dedicated Proxmox test cluster before production deployment.
 
-### Phase E: LLDP Topology Discovery (optional)
+#### Overview
 
-**Priority:** LOW — nice-to-have for physical topology mapping
-**Effort:** Low-Medium
-**Impact:** Medium (reveals physical cable connections)
+LLDP (Link Layer Discovery Protocol) maps physical cable connections — which port on device A connects to which port on device B. This creates NetBox Cable entities linking interfaces across devices, completing the topology picture that the existing discovery workers (IPs, interfaces, devices) cannot provide.
 
-Query LLDP neighbor data from pfSense REST API or `lldpctl -f json` on nodes. Map neighbors to NetBox Cable objects. Would complete the physical topology picture (which port connects to which).
+#### Current State (2026-04-21)
+
+- **pfSense**: lldpd package installed and running. Chassis: `uhstray.pfsense.lan`, MAC `90:ec:77:8f:6d:4e`, MgmtIP `192.168.1.1`. Capabilities: Router. Already seeing switch neighbors.
+- **Proxmox nodes**: lldpd NOT installed. Need Ansible playbook to deploy.
+- **Switches**: Multiple managed switches on the network support LLDP as neighbors. They don't need configuration — they're discovered as LLDP neighbors of pfSense and Proxmox nodes.
+- **Servers**: Physical servers (Proxmox nodes) will report their connections to switches once lldpd is installed.
+
+#### Data Collection Architecture
+
+pfrest v2 does NOT expose LLDP neighbors via REST API. All LLDP data is collected via SSH using `lldpctl -f json0` (structured JSON format, stable across interface/neighbor counts).
+
+```
+Semaphore (scheduled, every 6h)
+  → collect-lldp-topology.yml
+  → SSH to pfSense + each Proxmox node
+  → lldpctl -f json0
+  → Python task: parse neighbors, match to NetBox devices
+  → Diode SDK: push Cable entities via gRPC
+```
+
+#### Implementation Steps
+
+##### E-i: Install lldpd on Proxmox nodes
+**Playbook:** `platform/playbooks/install-lldpd.yml`
+- Install `lldpd` package via apt
+- Configure system name and management address
+- Enable and start the service
+- Verify LLDP frames are being sent/received
+- Target: all Proxmox hypervisor hosts via Semaphore
+
+##### E-ii: Collect LLDP topology and push to Diode
+**Playbook:** `platform/playbooks/collect-lldp-topology.yml`
+- SSH to pfSense + all Proxmox nodes
+- Run `lldpctl -f json0` on each host
+- Aggregate neighbor data across all hosts
+- Python task: parse JSON, match local/remote chassis to NetBox device names
+- Push Cable entities to Diode via SDK (`Cable` with `GenericObject(object_interface=Interface(...))` terminations)
+- Run on schedule via Semaphore (every 6h, offset from other discovery)
+
+##### E-iii: Validation
+**Playbook:** extend `check-discovery.yml`
+- Verify Cable entities appear in NetBox
+- Check for stale cables (devices that no longer appear as LLDP neighbors)
+- Count cables vs expected connections
+
+#### Diode SDK Cable Entity Pattern
+
+```python
+from netboxlabs.diode.sdk.ingester import Cable, Entity, GenericObject, Interface, Device, DeviceType, Manufacturer, Site
+
+# A side: local interface
+a_term = GenericObject(
+    object_interface=Interface(
+        name="eth0",
+        device=Device(name="alphacentauri", device_type=DeviceType(model="...", manufacturer=Manufacturer(name="...")), site=Site(name="...")),
+    )
+)
+
+# B side: remote neighbor interface  
+b_term = GenericObject(
+    object_interface=Interface(
+        name="port24",
+        device=Device(name="switch-01", device_type=DeviceType(model="...", manufacturer=Manufacturer(name="...")), site=Site(name="...")),
+    )
+)
+
+cable = Cable(
+    a_terminations=[a_term],
+    b_terminations=[b_term],
+    status="connected",
+    label="LLDP-discovered",
+)
+entities.append(Entity(cable=cable))
+```
+
+#### Device Name Resolution
+
+LLDP neighbor data includes chassis name (sysName), port ID, and port description. These must be matched to existing NetBox device names:
+
+| LLDP Field | NetBox Match |
+|------------|-------------|
+| Chassis sysName | Device.name (exact match or FQDN→hostname) |
+| Port ID (ifname) | Interface.name on the matched device |
+| Port description | Fallback for interface name if Port ID is a MAC |
+| Management IP | Fallback device lookup via IPAddress.address |
+
+Unresolved neighbors (devices not in NetBox) are logged but don't create cables — you can't cable to a device that doesn't exist in the model.
+
+#### Semaphore Templates
+
+| Template | Playbook | Schedule | Purpose |
+|----------|----------|----------|---------|
+| Install LLDP | `install-lldpd.yml` | Manual | One-time setup on new nodes |
+| Collect LLDP Topology | `collect-lldp-topology.yml` | `0 */6 * * *` | Periodic cable discovery |
 
 ---
 
@@ -260,9 +327,7 @@ Each discovery source uses a unique `agent_name` / `app_name` to prevent cross-s
 
 ## Diode SDK Entity Coverage
 
-**Currently used (14 types):** Device, DeviceRole, DeviceType, Entity, Interface, IPAddress, Location, Manufacturer, Platform, Rack, Region, Site, Tenant
-
-**Phase 2c additions (4 types):** Cluster, ClusterType, ClusterGroup, VirtualMachine
+**Currently used (17 types):** Cluster, ClusterType, Device, DeviceRole, DeviceType, Entity, Interface, IPAddress, Location, Manufacturer, Platform, Rack, Region, Site, Tenant, VirtualMachine, VMInterface
 
 **Available in SDK v1.10.0 but not yet needed:** Cable, CircuitTermination, ConsolePort, FrontPort, PowerFeed, Prefix, RearPort, VLAN, VLANGroup, VRF, and 70+ more
 
@@ -277,10 +342,10 @@ Each discovery source uses a unique `agent_name` / `app_name` to prevent cross-s
 | 2b. Proxmox guest IPs | Medium | High | COMPLETE (2026-04-16) |
 | 2.5 Seed data templating | Low | Medium | COMPLETE (2026-04-17) |
 | 2.6 Cleanup tooling | Medium | High | COMPLETE (2026-04-18) |
-| **2c-i. Primary IPv4** | **Low** | **High** | **TODO — next** |
-| **2c-ii. Cluster modeling** | **Medium** | **High** | **TODO** |
-| **2c-iii. GPS coordinates** | **Low** | **Low** | **TODO** |
-| **2c-iv. Description sanitization** | **Low** | **Medium** | **TODO** |
+| 2c-i. Primary IPv4 | Low | High | COMPLETE (2026-04-21) |
+| 2c-ii. Cluster modeling | Medium | High | COMPLETE (2026-04-21) |
+| 2c-iii. GPS coordinates | Low | Low | COMPLETE (2026-04-21) |
+| 2c-iv. Description sanitization | Low | Medium | COMPLETE (2026-04-21) |
 | D. SNMPv3 upgrade | Medium | Medium | DEFERRED |
 | E. LLDP topology | Low-Medium | Medium | OPTIONAL |
 
