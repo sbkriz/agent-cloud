@@ -70,6 +70,7 @@
           app: ansible
           autorun: false
           suppress_success_alerts: true
+          survey_vars: "{{ item.survey_vars | default(omit) }}"
         status_code: [200, 201, 204]
       loop: "{{ _template_config.templates }}"
       loop_control:
