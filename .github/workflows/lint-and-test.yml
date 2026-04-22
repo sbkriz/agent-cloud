@@ -29,7 +29,7 @@ jobs:
         run: pip install yamllint && yamllint -c .yamllint.yml .
 
       - name: Dockerfile lint (hadolint)
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: platform/services/netbox/deployment/Dockerfile-Plugins
           failure-threshold: warning
