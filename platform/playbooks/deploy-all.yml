@@ -28,7 +28,7 @@
 - name: "Phase 2: Deploy data & automation services"
   hosts: nocodb_svc:n8n_svc
   gather_facts: false
-  strategy: free
+  strategy: linear
   vars:
     _monorepo_dir: "/home/{{ ansible_user }}/agent-cloud"
     _branch: "{{ service_branch | default('main') }}"
@@ -36,7 +36,7 @@
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
   tasks:
-    - name: "Deploy {{ service_name }}"
+    - name: "Deploy service — {{ service_name }}"
       ansible.builtin.include_tasks: tasks/clone-and-deploy.yml
 
 # ── Phase 3: NetBox ─────────────────────────────────────────────────────

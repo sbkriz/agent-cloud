@@ -23,7 +23,7 @@
   delegate_to: localhost
   no_log: true
 
-- name: "Create/update policy: {{ _approle_name }}"
+- name: "Create or update policy for {{ _approle_name }}"
   ansible.builtin.uri:
     url: "{{ _bao_url }}/v1/sys/policies/acl/{{ _approle_name }}"
     method: PUT
@@ -45,7 +45,7 @@
   register: _auth_methods
   delegate_to: localhost
 
-- name: "Create/update AppRole: {{ _approle_name }}"
+- name: "Create or update AppRole — {{ _approle_name }}"
   ansible.builtin.uri:
     url: "{{ _bao_url }}/v1/auth/approle/role/{{ _approle_name }}"
     method: POST

@@ -77,6 +77,8 @@
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
     - name: "Write compose bind-mount secret (temporary — deleted after container start)"
+      vars:
+        _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
       block:
         - name: "Ensure secrets/ dir for compose mount"
           ansible.builtin.file:
@@ -90,8 +92,6 @@
             dest: "{{ _deploy_dir }}/secrets/netbox_to_diode_client_secret.txt"
             mode: "0644"
           no_log: true
-      vars:
-        _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
 
 # ── Phase 2: Infrastructure (deploy.sh — containers up + healthy) ────
 - name: "Phase 2: Start NetBox containers"
