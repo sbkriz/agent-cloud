@@ -121,55 +121,37 @@ exclude_paths:
 ```text
 platform/services/netbox/deployment/
   tests/
-    conftest.py                    # SDK stubs, mock factories
-    test_proxmox_helpers.py        # Pure function tests
-    test_proxmox_builders.py       # Entity builder tests (mocked SDK)
-    test_pfsense_helpers.py        # _is_valid_ip, role validation
-    test_pfsense_builders.py       # Entity builder tests (mocked SDK)
+    conftest.py              # SDK stubs (worker.backend, worker.models)
+    test_proxmox_helpers.py  # 66 test cases via 14 parametrized functions
+    test_pfsense_helpers.py  # 13 test cases via 1 parametrized function
 ```
 
 ### Mock Strategy
 
-The `worker.backend.Backend` and `worker.models` modules are orb-agent runtime-only — not pip-installable. Strategy:
+The `worker.backend.Backend` and `worker.models` modules are orb-agent runtime-only — not pip-installable. `conftest.py` stubs them via `sys.modules` injection. The real `netboxlabs-diode-sdk` is installed as a test dependency (entity constructors are pure data containers).
 
-1. Create stub modules in `conftest.py` via `sys.modules` injection
-2. Install the real `netboxlabs-diode-sdk` as a test dependency (entity constructors are pure data containers)
-3. Mock only `_reverse_dns()` (does DNS lookups) and any network calls
+### Implemented Tests — Pure Logic (parametrized)
 
-### Testable Functions — Pure Logic (no mocking needed)
+| Parametrized Function | Module | Test Cases |
+|-----------------------|--------|------------|
+| `test_int` | proxmox_discovery | 9 |
+| `test_mb_to_gb` | proxmox_discovery | 4 |
+| `test_bytes_to_gb` | proxmox_discovery | 3 |
+| `test_should_skip_iface` | proxmox_discovery | 12 |
+| `test_iface_type` | proxmox_discovery | 8 |
+| `test_prefix_len` | proxmox_discovery | 8 |
+| `test_returns_none` | proxmox_discovery | 3 |
+| `test_strips_sensitive_lines` | proxmox_discovery | 7 |
+| `test_preserves_words_containing_keywords` | proxmox_discovery | 3 |
+| `test_clean_description_unchanged` | proxmox_discovery | 1 |
+| `test_selection` | proxmox_discovery | 5 |
+| `test_skips_non_routable` | proxmox_discovery | 3 |
+| `test_is_valid_ip` | pfsense_sync | 13 |
+| **Total** | **13 functions** | **79 test cases** |
 
-| Function | Module | Est. Test Cases |
-|----------|--------|----------------|
-| `_int(val, default)` | proxmox_discovery | 6 |
-| `_mb_to_gb(mb)` | proxmox_discovery | 4 |
-| `_bytes_to_gb(b)` | proxmox_discovery | 4 |
-| `_should_skip_iface(name)` | proxmox_discovery | 8 |
-| `_iface_type(name)` | proxmox_discovery | 7 |
-| `_prefix_len(cidr)` | proxmox_discovery | 5 |
-| `_netmask_to_prefix(netmask)` | proxmox_discovery | 5 |
-| `_sanitize_description(desc)` | proxmox_discovery | 8 |
-| `_pick_primary_ipv4(ips)` | proxmox_discovery | 7 |
-| `_is_valid_ip(addr_str)` | pfsense_sync | 8 |
-| **Total** | | **~62** |
+### Future: Entity Builder Tests (mocked SDK/API)
 
-### Testable Functions — Mocked SDK/API
-
-| Function | Mocks | Est. Test Cases |
-|----------|-------|----------------|
-| `_build_iface_entities()` | SDK ingester | 4 |
-| `_build_vm_iface_entities()` | SDK ingester | 4 |
-| `_build_node()` | ProxmoxAPI + SDK | 3 |
-| `_build_vm()` | ProxmoxAPI + SDK | 4 |
-| `_build_lxc()` | ProxmoxAPI + SDK | 3 |
-| `_build_seed_entities()` | SDK ingester | 3 |
-| `PfSenseSyncBackend._build_entities()` | PfSenseClient + SDK | 4 |
-| **Total** | | **~25** |
-
-### Coverage Targets
-
-- Pure helpers: **90%+** (immediately achievable)
-- Entity builders: **70-80%** (limited by mock complexity)
-- Overall line coverage: **60%+** as initial target
+These would test `_build_node()`, `_build_vm()`, `_build_lxc()`, `_build_seed_entities()`, and `_build_entities()` with mocked Proxmox API and SDK. Not yet implemented — prioritized pure function coverage first.
 
 ---
 
@@ -179,15 +161,24 @@ The `worker.backend.Backend` and `worker.models` modules are orb-agent runtime-o
 
 Already covered in Phase 1b.
 
-### BATS Unit Tests (optional, medium effort)
-
-**Scope:** `platform/lib/common.sh` functions that are pure enough to test:
-- `gen_secret()` — random string generation
-- `needs_gen()` — secret existence check logic
-- `detect_runtime()` — container engine detection
-- `sedi()` — cross-platform sed
+### BATS Unit Tests — IMPLEMENTED
 
 **Framework:** [BATS](https://github.com/bats-core/bats-core) (Bash Automated Testing System)
+
+```text
+platform/tests/
+  test_common.bats          # 8 functions testing platform/lib/common.sh
+  test_netbox_common.bats   # 6 functions testing netbox lib/common.sh
+```
+
+**36 test cases across 14 composable functions:**
+
+| Test File | Functions Tested | Test Cases |
+|-----------|-----------------|------------|
+| `test_common.bats` | gen_secret, needs_gen, get/put_secret, detect_runtime, info, warn | ~20 |
+| `test_netbox_common.bats` | gen_secret, gen_django_key, get/put_secret, needs_gen, get_val, read_existing | ~16 |
+
+Tests use multi-assertion patterns — each BATS function verifies multiple related behaviors (e.g., `put/get_secret` tests create, read, permissions, overwrite, and missing in one function).
 
 ---
 
@@ -197,16 +188,15 @@ Already covered in Phase 1b.
 
 Already covered. trufflehog as pre-commit + CI gate.
 
-### 4b. Dependency Scanning
+### 4b. Dependency Scanning — IMPLEMENTED
 
-**Tool:** GitHub Dependabot or Renovate
-**Scope:** Python deps in `pyproject.toml`, Ansible collections in `requirements.yml`, container images in `docker-compose.yml`
+**Tool:** GitHub Dependabot (`.github/dependabot.yml`)
+**Scope:** pip (3 directories), GitHub Actions, Docker base images. Weekly schedule.
 
-### 4c. Python Security Linting — Bandit
+### 4c. Python Security Linting — IMPLEMENTED
 
-**Scope:** All Python files
-**Integration:** Add to ruff or run standalone in CI
-**Key checks:** hardcoded passwords, use of `exec`/`eval`, insecure deserialization
+**Tool:** Bandit in CI security job. Skips B101 (assert) and B110 (try-except-pass).
+**Scope:** Worker Python files and `lib/pfsense-sync.py`.
 
 ### 4d. Sanitization Regex Hardening
 
@@ -246,20 +236,22 @@ No changes needed to Semaphore. GitHub Actions handles pre-merge quality; Semaph
 
 ## Implementation Priority
 
-| Phase | Effort | Impact | Dependencies |
-|-------|--------|--------|-------------|
-| 1a. Ruff (Python lint) | Low | High | None |
-| 1b. ShellCheck | Low | High | None |
-| 1c. Ansible-lint | Low | Medium | None |
-| 1e. trufflehog | Low | High | None |
-| 5. GitHub Actions CI | Medium | High | Phases 1a-1e |
-| 2. Python unit tests | Medium | High | pytest setup |
-| 4b. Dependabot | Low | Medium | None |
-| 1d. YAML lint | Low | Low | None |
-| 3. BATS tests | Medium | Low | BATS setup |
-| 4c. Bandit | Low | Medium | None |
-
-**Recommended first commit:** Add `ruff` config to `pyproject.toml`, add `.ansible-lint`, add a GitHub Actions workflow with ruff + shellcheck + ansible-lint + trufflehog. This single PR establishes the quality gate for all future work.
+| Phase | Status | Tests/Tools |
+|-------|--------|-------------|
+| 1a. Ruff (Python lint) | ✅ Implemented | `pyproject.toml` config, violations fixed |
+| 1b. ShellCheck | ✅ Implemented | Warning severity, full repo scan, violations fixed |
+| 1c. Ansible-lint | ✅ Implemented | `.ansible-lint` config, CI step |
+| 1d. YAML lint | ✅ Implemented | `.yamllint.yml`, trailing-spaces enforced |
+| 1e. Hadolint | ✅ Implemented | Dockerfile linting in CI |
+| 1f. Jinja2 validation | ✅ Covered | Via ansible-lint |
+| 1g. HCL validation | ✅ Implemented | `vault fmt -check` in CI |
+| 1h. Trufflehog | ✅ Implemented | Secret scanning in CI |
+| 2. Python unit tests | ✅ Implemented | 79 test cases, 13 parametrized functions |
+| 3. BATS bash tests | ✅ Implemented | 36 test cases, 14 composable functions |
+| 4a. Secret scanning | ✅ Implemented | Trufflehog in CI |
+| 4b. Dependabot | ✅ Implemented | pip, GitHub Actions, Docker |
+| 4c. Bandit | ✅ Implemented | Python security lint in CI |
+| 5. CI pipeline | ✅ Implemented | 3 jobs: lint, security, test |
 
 ---
 

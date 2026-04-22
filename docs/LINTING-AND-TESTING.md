@@ -219,16 +219,30 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 
 ## Test Framework
 
-### Python (pytest)
+### Python (pytest) — 79 test cases, 13 parametrized functions
 
-79 unit tests for discovery worker helper functions. Configuration in `pyproject.toml`. Tests in `platform/services/netbox/deployment/tests/`.
+Tests use `@pytest.mark.parametrize` for composability — each function covers multiple inputs in a single definition.
 
-Requires Python 3.11+ and the Diode SDK (`pip install netboxlabs-diode-sdk`). The `conftest.py` stubs the orb-agent runtime modules (`worker.backend`, `worker.models`) that aren't pip-installable.
+| Test File | Functions Covered | Test Cases |
+| --------- | ----------------- | ---------- |
+| `test_proxmox_helpers.py` | `_int`, `_mb_to_gb`, `_bytes_to_gb`, `_should_skip_iface`, `_iface_type`, `_prefix_len`, `_sanitize_description`, `_pick_primary_ipv4` | 66 |
+| `test_pfsense_helpers.py` | `_is_valid_ip` | 13 |
 
-### Bash (BATS)
+**Requires:** Python 3.11+ and `pip install netboxlabs-diode-sdk proxmoxer requests pytest`.
 
-36 unit tests for `common.sh` pure functions (secret generation, persistence, runtime detection, env file parsing). Tests in `platform/tests/`.
+The `conftest.py` stubs the orb-agent runtime modules (`worker.backend`, `worker.models`) that aren't pip-installable. The real Diode SDK is installed for entity constructor validation.
 
-Install: `brew install bats-core` (macOS) or `apt install bats` (Ubuntu).
+### Bash (BATS) — 36 test cases, 14 composable functions
+
+Tests use multi-assertion patterns — each BATS function verifies multiple related behaviors in one test.
+
+| Test File | Functions Covered | Test Cases |
+| --------- | ----------------- | ---------- |
+| `test_common.bats` | `gen_secret`, `needs_gen`, `get/put_secret`, `detect_runtime`, `info`, `warn` | ~20 |
+| `test_netbox_common.bats` | `gen_secret`, `gen_django_key`, `get/put_secret`, `needs_gen`, `get_val`, `read_existing` | ~16 |
+
+**Requires:** `brew install bats-core` (macOS) or `apt install bats` (Ubuntu).
+
+### Total: 115 test cases across 27 composable test functions
 
 See `plan/architecture/TESTING-AND-LINTING-PLAN.md` for the full testing roadmap.
