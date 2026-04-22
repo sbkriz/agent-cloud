@@ -171,12 +171,7 @@ New SDK imports: `Cluster`, `ClusterType`, `VirtualMachine`, `VMInterface`. VMs/
 
 Root cause: the standalone Site entity carrying `latitude`/`longitude` was only emitted when `self._region_name` was set. If the Site was created before the region was configured, coords were never sent. Fixed in both workers to always emit the Site entity with available coords regardless of region. If Diode reconciler still doesn't update existing Site scalar fields, fall back to Django shell:
 
-```python
-from dcim.models import Site
-s = Site.objects.get(name="Uhstray.io Datacenter")
-s.latitude, s.longitude = 41.19481797890624, -74.43649455017179
-s.save()
-```
+The `check-discovery.yml` playbook includes a GPS fallback task that sets coordinates from `discovery_site_latitude` / `discovery_site_longitude` inventory variables (defined in site-config). Run it via Semaphore "Check Discovery Pipeline" template.
 
 #### 2c-iv: Description Sanitization — COMPLETE
 
