@@ -93,7 +93,7 @@
           /opt/netbox/netbox/manage.py shell -c
           "from dcim.models import Site;
           s = Site.objects.get(name='Uhstray.io Datacenter');
-          if s.latitude is None:
+          if s.latitude is None or s.longitude is None:
               s.latitude = 41.19481797890624;
               s.longitude = -74.43649455017179;
               s.save();
@@ -102,7 +102,6 @@
               print(f'GPS already set: lat={s.latitude} lon={s.longitude}')"
       register: _gps_fix
       changed_when: "'SET GPS' in _gps_fix.stdout"
-      ignore_errors: true
 
     - name: Show GPS result
       ansible.builtin.debug:
