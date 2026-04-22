@@ -87,6 +87,7 @@ graph TB
 **Remaining gaps:**
 - **GPS coordinates** — Code fix deployed (2026-04-21): Site entity now always emitted with lat/lon. Verify on next discovery cycle; fall back to Django shell if Diode reconciler doesn't update existing Site scalars
 - **Post-migration cleanup** — After deploying v3.0.0, old Device entries for VMs/LXC will coexist with new VirtualMachine entities. Run cleanup-netbox.yml to remove the orphaned Devices
+- **LLDP topology (Phase E)** — Plan and playbooks ready on `feat/lldp-hypervisor-setup` branch. Requires test Proxmox cluster before deploying lldpd to production hypervisors
 
 **Post-cleanup state (32 devices):**
 - 1 region (US East), 1 site (Uhstray.io Datacenter), 1 location (Server Room)
@@ -187,11 +188,12 @@ Added `_sanitize_description()` to the proxmox_discovery worker. Strips lines co
 
 ### Phase D: SNMPv3 Upgrade — moved to [SNMPV3-UPGRADE-PLAN.md](SNMPV3-UPGRADE-PLAN.md)
 
-### Phase E: LLDP Topology Discovery — IN PROGRESS
+### Phase E: LLDP Topology Discovery — PLANNED (awaiting test cluster)
 
 **Priority:** MEDIUM — completes the physical topology picture
 **Effort:** Medium (Ansible automation + Diode push script)
 **Impact:** High (reveals physical cable connections between all devices)
+**Blocked by:** Requires installing lldpd on Proxmox hypervisors. Playbooks are on branch `feat/lldp-hypervisor-setup` — to be tested on a dedicated Proxmox test cluster before production deployment.
 
 #### Overview
 
