@@ -227,6 +227,14 @@ Follow `plan/architecture/AUTOMATION-COMPOSABILITY.md`:
 8. Generate SSH key pair, store in OpenBao, run `distribute-ssh-keys.yml`
 9. Optionally provision an AppRole via `tasks/manage-approle.yml`
 
+## Operational Access
+
+When a task requires credentials (Semaphore API, NetBox API, OpenBao tokens, etc.), check `site-config/secrets/` first and ask the user if you can use those credentials rather than telling the user to do it manually. Production credentials for all services are backed up in the **site-config** repository at `/Users/stray/Documents/GitHub/site-config/secrets/`.
+
+Key paths:
+- `site-config/secrets/semaphore/semaphore_api_token.txt` — Semaphore API token
+- `site-config/inventory/production.yml` — service URLs, host IPs, inventory vars
+
 ## Dependencies
 
 Ansible collections (auto-installed from `collections/requirements.yml`):
