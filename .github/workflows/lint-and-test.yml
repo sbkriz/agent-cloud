@@ -51,3 +51,26 @@ jobs:
         run: |
           ! git diff origin/main...HEAD | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
           ! git diff origin/main...HEAD | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
+
+      - name: Python security lint (bandit)
+        run: pip install bandit && bandit -r platform/services/netbox/deployment/workers/ platform/services/netbox/deployment/lib/pfsense-sync.py -s B101,B110 -q
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest netboxlabs-diode-sdk proxmoxer requests
+
+      - name: Run tests
+        working-directory: platform/services/netbox/deployment
+        env:
+          PYTHONPATH: workers/proxmox_discovery:workers/pfsense_sync
+        run: pytest tests/ -v
