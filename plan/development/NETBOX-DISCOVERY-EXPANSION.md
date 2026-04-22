@@ -185,21 +185,112 @@ Added `_sanitize_description()` to the proxmox_discovery worker. Strips lines co
 
 ## Remaining Phases
 
-### Phase D: SNMPv3 Upgrade (deferred)
+### Phase D: SNMPv3 Upgrade — moved to [SNMPV3-UPGRADE-PLAN.md](SNMPV3-UPGRADE-PLAN.md)
 
-**Priority:** LOW — security hardening for existing SNMP, not blocking any functionality
-**Effort:** Medium (credential setup + snmpd config on pfSense)
-**Impact:** Medium (encrypted SNMP on the wire)
+### Phase E: LLDP Topology Discovery — IN PROGRESS
 
-Upgrade from SNMPv2c (plaintext community string) to SNMPv3 (SHA auth + AES encryption). Store credentials in OpenBao at `secret/services/discovery/snmp_v3`. Update `agent.yaml.j2` SNMP policies. **Deferred** because the Proxmox API (Phase 2) already provides most device data, and pfSense REST API provides richer data than SNMP.
+**Priority:** MEDIUM — completes the physical topology picture
+**Effort:** Medium (Ansible automation + Diode push script)
+**Impact:** High (reveals physical cable connections between all devices)
 
-### Phase E: LLDP Topology Discovery (optional)
+#### Overview
 
-**Priority:** LOW — nice-to-have for physical topology mapping
-**Effort:** Low-Medium
-**Impact:** Medium (reveals physical cable connections)
+LLDP (Link Layer Discovery Protocol) maps physical cable connections — which port on device A connects to which port on device B. This creates NetBox Cable entities linking interfaces across devices, completing the topology picture that the existing discovery workers (IPs, interfaces, devices) cannot provide.
 
-Query LLDP neighbor data from pfSense REST API or `lldpctl -f json` on nodes. Map neighbors to NetBox Cable objects. Would complete the physical topology picture (which port connects to which).
+#### Current State (2026-04-21)
+
+- **pfSense**: lldpd package installed and running. Chassis: `uhstray.pfsense.lan`, MAC `90:ec:77:8f:6d:4e`, MgmtIP `192.168.1.1`. Capabilities: Router. Already seeing switch neighbors.
+- **Proxmox nodes**: lldpd NOT installed. Need Ansible playbook to deploy.
+- **Switches**: Multiple managed switches on the network support LLDP as neighbors. They don't need configuration — they're discovered as LLDP neighbors of pfSense and Proxmox nodes.
+- **Servers**: Physical servers (Proxmox nodes) will report their connections to switches once lldpd is installed.
+
+#### Data Collection Architecture
+
+pfrest v2 does NOT expose LLDP neighbors via REST API. All LLDP data is collected via SSH using `lldpctl -f json0` (structured JSON format, stable across interface/neighbor counts).
+
+```
+Semaphore (scheduled, every 6h)
+  → collect-lldp-topology.yml
+  → SSH to pfSense + each Proxmox node
+  → lldpctl -f json0
+  → Python task: parse neighbors, match to NetBox devices
+  → Diode SDK: push Cable entities via gRPC
+```
+
+#### Implementation Steps
+
+##### E-i: Install lldpd on Proxmox nodes
+**Playbook:** `platform/playbooks/install-lldpd.yml`
+- Install `lldpd` package via apt
+- Configure system name and management address
+- Enable and start the service
+- Verify LLDP frames are being sent/received
+- Target: all Proxmox hypervisor hosts via Semaphore
+
+##### E-ii: Collect LLDP topology and push to Diode
+**Playbook:** `platform/playbooks/collect-lldp-topology.yml`
+- SSH to pfSense + all Proxmox nodes
+- Run `lldpctl -f json0` on each host
+- Aggregate neighbor data across all hosts
+- Python task: parse JSON, match local/remote chassis to NetBox device names
+- Push Cable entities to Diode via SDK (`Cable` with `GenericObject(object_interface=Interface(...))` terminations)
+- Run on schedule via Semaphore (every 6h, offset from other discovery)
+
+##### E-iii: Validation
+**Playbook:** extend `check-discovery.yml`
+- Verify Cable entities appear in NetBox
+- Check for stale cables (devices that no longer appear as LLDP neighbors)
+- Count cables vs expected connections
+
+#### Diode SDK Cable Entity Pattern
+
+```python
+from netboxlabs.diode.sdk.ingester import Cable, Entity, GenericObject, Interface, Device, DeviceType, Manufacturer, Site
+
+# A side: local interface
+a_term = GenericObject(
+    object_interface=Interface(
+        name="eth0",
+        device=Device(name="alphacentauri", device_type=DeviceType(model="...", manufacturer=Manufacturer(name="...")), site=Site(name="...")),
+    )
+)
+
+# B side: remote neighbor interface  
+b_term = GenericObject(
+    object_interface=Interface(
+        name="port24",
+        device=Device(name="switch-01", device_type=DeviceType(model="...", manufacturer=Manufacturer(name="...")), site=Site(name="...")),
+    )
+)
+
+cable = Cable(
+    a_terminations=[a_term],
+    b_terminations=[b_term],
+    status="connected",
+    label="LLDP-discovered",
+)
+entities.append(Entity(cable=cable))
+```
+
+#### Device Name Resolution
+
+LLDP neighbor data includes chassis name (sysName), port ID, and port description. These must be matched to existing NetBox device names:
+
+| LLDP Field | NetBox Match |
+|------------|-------------|
+| Chassis sysName | Device.name (exact match or FQDN→hostname) |
+| Port ID (ifname) | Interface.name on the matched device |
+| Port description | Fallback for interface name if Port ID is a MAC |
+| Management IP | Fallback device lookup via IPAddress.address |
+
+Unresolved neighbors (devices not in NetBox) are logged but don't create cables — you can't cable to a device that doesn't exist in the model.
+
+#### Semaphore Templates
+
+| Template | Playbook | Schedule | Purpose |
+|----------|----------|----------|---------|
+| Install LLDP | `install-lldpd.yml` | Manual | One-time setup on new nodes |
+| Collect LLDP Topology | `collect-lldp-topology.yml` | `0 */6 * * *` | Periodic cable discovery |
 
 ---
 
