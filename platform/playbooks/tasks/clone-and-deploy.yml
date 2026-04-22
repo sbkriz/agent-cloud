@@ -31,7 +31,10 @@
     state: link
     force: true
   become: false
-  ignore_errors: true
+  register: _symlink_result
+  failed_when:
+    - _symlink_result is failed
+    - "'permission denied' in (_symlink_result.msg | default('') | lower)"
 
 - name: "Run deploy.sh for {{ service_name }}"
   ansible.builtin.shell: |

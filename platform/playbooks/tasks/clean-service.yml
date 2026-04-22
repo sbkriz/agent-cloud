@@ -9,6 +9,7 @@
 
 - name: "Stop and remove containers + volumes for {{ service_name }}"
   ansible.builtin.shell: |
+    set -o pipefail
     DEPLOY_DIR="{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     ENGINE="{{ container_engine | default('docker') }}"
     COMPOSE_FILE=""
@@ -38,6 +39,7 @@
 
 - name: "Verify clean"
   ansible.builtin.shell: |
+    set -o pipefail
     {{ container_engine | default('docker') }} volume ls 2>/dev/null | grep {{ service_name }} || echo "No {{ service_name }} volumes"
     {{ container_engine | default('docker') }} ps -a 2>/dev/null | grep {{ service_name }} || echo "No {{ service_name }} containers"
   register: _verify

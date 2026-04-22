@@ -60,6 +60,7 @@
 
     - name: "Check agent logs for vault auth"
       ansible.builtin.shell: |
+        set -o pipefail
         {{ container_engine | default('docker') }} logs netbox-orb-agent 2>&1 | tail -5
       become: true
       register: _orb_logs

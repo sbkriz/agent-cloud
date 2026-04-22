@@ -71,7 +71,11 @@
         dest: "/home/{{ ansible_user }}/{{ service_name }}"
         state: link
         force: true
-      ignore_errors: true
+      register: _symlink_result
+      failed_when:
+        - _symlink_result is failed
+        - _symlink_result.msg is defined
+        - "'permission denied' in (_symlink_result.msg | lower)"
 
     - name: "Manage secrets and template env files"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
@@ -141,6 +145,7 @@
 
     - name: "Verify Diode plugin can read the bind-mount secret"
       ansible.builtin.shell: |
+        set -o pipefail
         {{ container_engine | default('docker') }} exec netbox{{ _sep }}netbox{{ _sep }}1 \
           cat /run/secrets/netbox_to_diode 2>&1 | wc -c
       vars:

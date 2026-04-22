@@ -189,12 +189,17 @@
 
     # ── 8. SSH Key (from OpenBao) ────────────────────────────────────────
     - name: "Check SSH public key in OpenBao"
-      ansible.builtin.set_fact:
-        ssh_key_check: "{{ lookup('community.hashi_vault.hashi_vault',
-          'secret/data/services/ssh:public_key',
-          url=_bao_url, auth_method='approle',
-          role_id=_bao_role_id, secret_id=_bao_secret_id) | default('') }}"
-      ignore_errors: true
+      block:
+        - name: "Lookup SSH public key from vault"
+          ansible.builtin.set_fact:
+            ssh_key_check: "{{ lookup('community.hashi_vault.hashi_vault',
+              'secret/data/services/ssh:public_key',
+              url=_bao_url, auth_method='approle',
+              role_id=_bao_role_id, secret_id=_bao_secret_id) | default('') }}"
+      rescue:
+        - name: "SSH key lookup failed — record empty"
+          ansible.builtin.set_fact:
+            ssh_key_check: ""
 
     - name: "Record SSH key check"
       ansible.builtin.set_fact:
