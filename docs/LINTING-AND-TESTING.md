@@ -17,13 +17,22 @@ Every PR triggers two GitHub Actions jobs:
 | **ansible-lint** | Ansible playbook lint (syntax, best practices) | `.ansible-lint` | `platform/playbooks/` |
 | **yamllint** | YAML lint (syntax, trailing spaces, newlines) | `.yamllint.yml` | All `.yml`/`.yaml` files (excludes `netbox-docker/`) |
 | **hadolint** | Dockerfile lint (base images, layers, security) | Built-in rules | Custom Dockerfiles (excludes vendored) |
+| **vault fmt** | HCL policy format check | Built-in rules | `platform/services/openbao/**/*.hcl` |
 
 ### Security Scan
 
 | Tool | What it checks | Scope |
 | ---- | -------------- | ----- |
 | **TruffleHog** | Verified secrets (API keys, tokens, passwords) | Full repo history |
+| **Bandit** | Python security lint (hardcoded passwords, eval, etc.) | Worker Python files |
 | **IP/credential grep** | Leaked IPs (`192.168.*`) and credential patterns | PR diff only |
+
+### Unit Tests
+
+| Framework | What it tests | Test count | Scope |
+| --------- | ------------- | ---------- | ----- |
+| **pytest** | Python worker helper functions | 79 tests | `platform/services/netbox/deployment/tests/` |
+| **BATS** | Bash common.sh functions (secrets, runtime detection) | 36 tests | `platform/tests/` |
 
 ---
 
@@ -77,6 +86,35 @@ brew install hadolint
 
 # Check custom Dockerfile
 hadolint platform/services/netbox/deployment/Dockerfile-Plugins
+```
+
+### HCL Policies (vault fmt)
+
+```bash
+# macOS
+brew install vault  # or: brew install openbao
+
+# Check all HCL files
+find platform/services/openbao -name '*.hcl' -exec vault fmt -check {} +
+```
+
+### BATS (Bash tests)
+
+```bash
+# macOS
+brew install bats-core
+
+# Run all bash tests
+bats platform/tests/
+```
+
+### Python Tests (pytest)
+
+```bash
+# Requires Python 3.11+
+cd platform/services/netbox/deployment
+PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync \
+  python3.11 -m pytest tests/ -v
 ```
 
 ### Secret Scanning (TruffleHog)
@@ -139,7 +177,9 @@ When onboarding a new service, your code must pass all CI checks before merge:
 3. **Ansible playbooks**: Run `ansible-lint` on new or modified playbooks.
 4. **YAML files**: Run `yamllint -c .yamllint.yml` on compose files, playbooks, and templates. Remove trailing spaces, ensure final newline.
 5. **Dockerfiles**: Run `hadolint` on custom Dockerfiles.
-6. **Secrets**: Never commit real IPs, passwords, API tokens, or GPS coordinates. Use Jinja2 `{{ variable }}` references. Real values live in site-config (private repo).
+6. **HCL policies**: Run `vault fmt -check` on any `.hcl` files. These are security-critical.
+7. **Tests**: Run `pytest` (Python) and `bats` (Bash) to verify helper functions.
+8. **Secrets**: Never commit real IPs, passwords, API tokens, or GPS coordinates. Use Jinja2 `{{ variable }}` references. Real values live in site-config (private repo).
 
 ### Pre-PR Checklist
 
@@ -159,15 +199,36 @@ yamllint -c .yamllint.yml .
 # 5. Dockerfile lint
 hadolint platform/services/netbox/deployment/Dockerfile-Plugins
 
-# 6. Secret scan
+# 6. HCL format check
+find platform/services/openbao -name '*.hcl' -exec vault fmt -check {} +
+
+# 7. Python tests
+cd platform/services/netbox/deployment
+PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync python3.11 -m pytest tests/ -v
+cd -
+
+# 8. Bash tests
+bats platform/tests/
+
+# 9. Secret scan
 git diff --staged | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
 git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
 ```
 
 ---
 
-## Test Framework (Phase 2 — planned)
+## Test Framework
 
-Unit tests for discovery worker Python code will use **pytest** with mocked SDK dependencies. Configuration is in `pyproject.toml` under `[tool.pytest.ini_options]`. Tests will live in `platform/services/netbox/deployment/tests/`.
+### Python (pytest)
+
+79 unit tests for discovery worker helper functions. Configuration in `pyproject.toml`. Tests in `platform/services/netbox/deployment/tests/`.
+
+Requires Python 3.11+ and the Diode SDK (`pip install netboxlabs-diode-sdk`). The `conftest.py` stubs the orb-agent runtime modules (`worker.backend`, `worker.models`) that aren't pip-installable.
+
+### Bash (BATS)
+
+36 unit tests for `common.sh` pure functions (secret generation, persistence, runtime detection, env file parsing). Tests in `platform/tests/`.
+
+Install: `brew install bats-core` (macOS) or `apt install bats` (Ubuntu).
 
 See `plan/architecture/TESTING-AND-LINTING-PLAN.md` for the full testing roadmap.

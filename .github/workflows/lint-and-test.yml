@@ -34,6 +34,13 @@ jobs:
           dockerfile: platform/services/netbox/deployment/Dockerfile-Plugins
           failure-threshold: warning
 
+      - name: HCL format check
+        run: |
+          curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+          sudo apt-get update -qq && sudo apt-get install -y -qq vault > /dev/null 2>&1
+          find platform/services/openbao -name '*.hcl' -exec vault fmt -check {} +
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -69,8 +76,15 @@ jobs:
         run: |
           pip install pytest netboxlabs-diode-sdk proxmoxer requests
 
-      - name: Run tests
+      - name: Run Python tests
         working-directory: platform/services/netbox/deployment
         env:
           PYTHONPATH: workers/proxmox_discovery:workers/pfsense_sync
         run: pytest tests/ -v
+
+      - name: Install BATS
+        run: |
+          sudo apt-get install -y -qq bats > /dev/null 2>&1
+
+      - name: Run Bash tests
+        run: bats platform/tests/
