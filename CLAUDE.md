@@ -192,12 +192,13 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
 1. Create a feature branch from `main`: `git checkout -b feat/<description>` or `fix/<description>`
 2. Commit changes on the feature branch
-3. Push the branch: `git push -u origin feat/<description>`
-4. Create a PR via `gh pr create`
-5. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
-6. Address all review findings and push fixes
-7. Confirm all checks pass after fixes
-8. Only then merge the PR
+3. **Before creating a PR**, run `/simplify` and `/security-review` on the branch changes
+4. Push the branch: `git push -u origin feat/<description>`
+5. Create a PR via `gh pr create`
+6. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
+7. Address all review findings and push fixes
+8. Confirm all checks pass after fixes
+9. Only then merge the PR
 
 **Never merge a PR before its checks have completed and passed.** This applies to all development: new features, bug fixes, plan updates, and documentation changes.
 
