@@ -13,8 +13,10 @@ Every PR triggers two GitHub Actions jobs:
 | Tool | What it checks | Config file | Scope |
 | ---- | -------------- | ----------- | ----- |
 | **Ruff** | Python lint (style, imports, bugs) | `pyproject.toml` | All `.py` files |
-| **ShellCheck** | Bash lint (quoting, unused vars, bugs) | Built-in rules | All `.sh` files in `platform/` |
+| **ShellCheck** | Bash lint (quoting, unused vars, bugs) | Built-in rules | All `.sh` files (excludes `netbox-docker/`) |
+| **ansible-lint** | Ansible playbook lint (syntax, best practices) | `.ansible-lint` | `platform/playbooks/` |
 | **yamllint** | YAML lint (syntax, trailing spaces, newlines) | `.yamllint.yml` | All `.yml`/`.yaml` files (excludes `netbox-docker/`) |
+| **hadolint** | Dockerfile lint (base images, layers, security) | Built-in rules | Custom Dockerfiles (excludes vendored) |
 
 ### Security Scan
 
@@ -47,15 +49,34 @@ brew install shellcheck
 # Ubuntu
 apt install shellcheck
 
-# Check all scripts
-find platform/ -name '*.sh' -exec shellcheck -S warning {} +
+# Check all scripts (excludes netbox-docker/)
+find . -name '*.sh' ! -path '*/netbox-docker/*' -exec shellcheck -S warning {} +
 ```
+
+### Ansible (ansible-lint)
+
+```bash
+pip install ansible-lint
+ansible-lint platform/playbooks/
+```
+
+Configuration is in `.ansible-lint`. Skips `command-instead-of-module` and `no-changed-when` (intentional patterns in deploy playbooks).
 
 ### YAML (yamllint)
 
 ```bash
 pip install yamllint
 yamllint -c .yamllint.yml .
+```
+
+### Dockerfiles (hadolint)
+
+```bash
+# macOS
+brew install hadolint
+
+# Check custom Dockerfile
+hadolint platform/services/netbox/deployment/Dockerfile-Plugins
 ```
 
 ### Secret Scanning (TruffleHog)
@@ -115,8 +136,10 @@ When onboarding a new service, your code must pass all CI checks before merge:
 
 1. **Python code**: Run `ruff check` on any `.py` files. Fix import ordering, unused imports, and f-string issues before pushing.
 2. **Shell scripts**: Run `shellcheck -S warning` on your `deploy.sh`. Quote variables, use single-quoted traps, remove unused vars.
-3. **YAML files**: Run `yamllint -c .yamllint.yml` on compose files, playbooks, and templates. Remove trailing spaces, ensure final newline.
-4. **Secrets**: Never commit real IPs, passwords, API tokens, or GPS coordinates. Use Jinja2 `{{ variable }}` references. Real values live in site-config (private repo).
+3. **Ansible playbooks**: Run `ansible-lint` on new or modified playbooks.
+4. **YAML files**: Run `yamllint -c .yamllint.yml` on compose files, playbooks, and templates. Remove trailing spaces, ensure final newline.
+5. **Dockerfiles**: Run `hadolint` on custom Dockerfiles.
+6. **Secrets**: Never commit real IPs, passwords, API tokens, or GPS coordinates. Use Jinja2 `{{ variable }}` references. Real values live in site-config (private repo).
 
 ### Pre-PR Checklist
 
@@ -125,12 +148,18 @@ When onboarding a new service, your code must pass all CI checks before merge:
 ruff check .
 
 # 2. Shell lint
-find platform/ -name '*.sh' -exec shellcheck -S warning {} +
+find . -name '*.sh' ! -path '*/netbox-docker/*' -exec shellcheck -S warning {} +
 
-# 3. YAML lint
+# 3. Ansible lint
+ansible-lint platform/playbooks/
+
+# 4. YAML lint
 yamllint -c .yamllint.yml .
 
-# 4. Secret scan
+# 5. Dockerfile lint
+hadolint platform/services/netbox/deployment/Dockerfile-Plugins
+
+# 6. Secret scan
 git diff --staged | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
 git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
 ```

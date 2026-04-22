@@ -18,11 +18,21 @@ jobs:
       - name: Shell lint (shellcheck)
         uses: ludeeus/action-shellcheck@2.0.0
         with:
-          scandir: platform/
+          scandir: ./
           severity: warning
+          ignore_paths: netbox-docker
+
+      - name: Ansible lint
+        run: pip install ansible-lint && ansible-lint platform/playbooks/
 
       - name: YAML lint
         run: pip install yamllint && yamllint -c .yamllint.yml .
+
+      - name: Dockerfile lint (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: platform/services/netbox/deployment/Dockerfile-Plugins
+          failure-threshold: warning
 
   security:
     name: Security Scan

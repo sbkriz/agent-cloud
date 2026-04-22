@@ -9,7 +9,7 @@ services:
       FRONTEND_URL: "https://postiz.example.com"
       NEXT_PUBLIC_BACKEND_URL: "https://postiz.example.com/api"
       JWT_SECRET: "XXXXXXXXXXXXXXXXXXXXXXXXX"
- 
+
       # These defaults are probably fine, but if you change your user/password, update it in the
       # postiz-postgres or postiz-redis services below.
       DATABASE_URL: "postgresql://postiz-user:postiz-password@postiz-postgres:5432/postiz-db-local"
@@ -33,7 +33,7 @@ services:
         condition: service_healthy
       postiz-redis:
         condition: service_healthy
- 
+
   postiz-postgres:
     image: postgres:17-alpine
     container_name: postiz-postgres
@@ -64,21 +64,21 @@ services:
       - postiz-redis-data:/data
     networks:
       - postiz-network
- 
- 
+
+
 volumes:
   postgres-volume:
     external: false
- 
+
   postiz-redis-data:
     external: false
- 
+
   postiz-config:
     external: false
- 
+
   postiz-uploads:
     external: false
- 
+
 networks:
   postiz-network:
     external: false

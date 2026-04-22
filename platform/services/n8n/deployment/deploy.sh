@@ -70,7 +70,7 @@ step_bootstrap_credentials() {
   # Login to get session cookie
   local cookie_jar login_payload
   cookie_jar=$(mktemp)
-  trap "rm -f '$cookie_jar'" EXIT INT TERM
+  trap 'rm -f "$cookie_jar"' EXIT INT TERM
 
   login_payload=$(jq -n \
     --arg email "$ADMIN_EMAIL" \

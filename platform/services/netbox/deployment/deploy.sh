@@ -38,7 +38,7 @@ for arg in "$@"; do
 done
 
 NETBOX_URL="${NETBOX_URL:-http://localhost:8000}"
-DEFAULT_TIMEOUT=300  # 5 minutes
+export DEFAULT_TIMEOUT=300  # 5 minutes
 
 # Source shared library
 source "${SCRIPT_DIR}/lib/common.sh"

@@ -20,7 +20,7 @@ The repository has **zero automated testing or linting infrastructure**. No GitH
 2. **Static analysis before unit tests** — linting catches more bugs per hour of setup than writing tests
 3. **Test pure functions first** — the discovery workers have ~15 helper functions with clear contracts
 4. **Don't test what Semaphore already validates** — runtime health checks against live services stay in Semaphore
-5. **Security scanning is non-negotiable for a public repo** — gitleaks must gate every PR
+5. **Security scanning is non-negotiable for a public repo** — trufflehog must gate every PR
 
 ---
 
@@ -28,10 +28,11 @@ The repository has **zero automated testing or linting infrastructure**. No GitH
 
 ### 1a. Python Linting — Ruff
 
-**Scope:** 3 Python modules (~1,700 LOC total)
+**Scope:** 4 Python files (~1,800 LOC total)
 - `workers/proxmox_discovery/proxmox_discovery/__init__.py`
 - `workers/pfsense_sync/pfsense_sync/__init__.py`
 - `lib/pfsense-sync.py`
+- `configuration/plugins.py`
 
 **Configuration:** Add `[tool.ruff]` to root `pyproject.toml`:
 ```toml
@@ -46,12 +47,13 @@ ignore = ["BLE001"]  # blind except is intentional in worker error handling
 
 ### 1b. Shell Linting — ShellCheck
 
-**Scope:** 26 shell scripts across the repo
+**Scope:** 28 shell scripts across the repo
 - `platform/lib/common.sh`, `platform/lib/bao-client.sh`
 - `platform/services/*/deployment/deploy.sh`
 - `platform/services/netbox/deployment/lib/common.sh`, `lib/generate-secrets.sh`
+- `agents/nemoclaw/deployment/deploy.sh`, `update.sh`, `validate.sh`
 
-**Tool:** `shellcheck` (install via `brew install shellcheck` or CI action)
+**Tool:** `shellcheck` (install via `brew install shellcheck` or CI action). Scans the entire repo (excluding `netbox-docker/`).
 
 ### 1c. Ansible Linting
 
@@ -75,11 +77,36 @@ exclude_paths:
 **Scope:** All YAML files (playbooks, compose files, agent configs, templates.yml)
 **Tool:** `yamllint` with relaxed rules for Ansible compatibility
 
-### 1e. Secret Scanning — gitleaks
+### 1e. Dockerfile Linting — hadolint
+
+**Scope:** 1 custom Dockerfile
+- `platform/services/netbox/deployment/Dockerfile-Plugins`
+- (`netbox-docker/Dockerfile` is vendored upstream — excluded)
+
+**Tool:** `hadolint` via CI action. Catches base image issues, layer inefficiencies, and security anti-patterns.
+
+### 1f. Jinja2 Template Validation
+
+**Scope:** 6 Jinja2 templates in `platform/services/netbox/deployment/templates/`
+- `agent.yaml.j2`, `discovery.env.j2`, `dot-env.j2`, `hydra.yaml.j2`, `netbox.env.j2`, `postgres.env.j2`
+
+**Tool:** `ansible-lint` validates Jinja2 syntax when checking playbooks that reference templates. Standalone `j2lint` available for direct template checking.
+
+### 1g. HCL Policy Validation
+
+**Scope:** 8 HCL files in `platform/services/openbao/deployment/config/`
+- `openbao.hcl` (server config)
+- `policies/*.hcl` (7 AppRole policies: semaphore-read, semaphore-write, orb-agent, nemoclaw-read, nemoclaw-rotate, nocodb-write, n8n-write)
+
+**Tool:** `openbao policy fmt -check` or `terraform fmt -check` for syntax validation. These are security-critical files — invalid policy syntax could lock out services.
+
+**Status:** Manual validation for now. CI integration planned when `openbao` CLI is available in GitHub Actions runners.
+
+### 1h. Secret Scanning — trufflehog
 
 **Scope:** All committed content + staged changes
-**Tool:** `gitleaks` as pre-commit hook and CI gate
-**Rationale:** The manual grep patterns in CLAUDE.md catch IPs and simple passwords but miss API tokens, SSH keys, base64 credentials, JWTs, PEM content. gitleaks covers all of these.
+**Tool:** `trufflehog` as pre-commit hook and CI gate
+**Rationale:** The manual grep patterns in CLAUDE.md catch IPs and simple passwords but miss API tokens, SSH keys, base64 credentials, JWTs, PEM content. trufflehog covers all of these.
 
 ---
 
@@ -168,7 +195,7 @@ Already covered in Phase 1b.
 
 ### 4a. Secret Scanning (Phase 1e)
 
-Already covered. gitleaks as pre-commit + CI gate.
+Already covered. trufflehog as pre-commit + CI gate.
 
 ### 4b. Dependency Scanning
 
@@ -198,49 +225,13 @@ Both `proxmox_discovery` and `pfsense_sync` default `verify_ssl=False`. Document
 
 ### Proposed Workflow
 
-```yaml
-name: Lint and Test
-on: [pull_request]
+See `.github/workflows/lint-and-test.yml` for the actual implementation. The workflow runs two jobs on every PR to main:
 
-jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Python lint (ruff)
-        uses: astral-sh/ruff-action@v3
-      - name: Shell lint (shellcheck)
-        uses: ludeeus/action-shellcheck@2.0.0
-        with:
-          scandir: platform/
-      - name: Ansible lint
-        run: pip install ansible-lint && ansible-lint platform/playbooks/
-      - name: YAML lint
-        run: pip install yamllint && yamllint -d relaxed .
+**lint job:** ruff (Python), shellcheck (all `.sh` files, warning severity), ansible-lint (playbooks), yamllint (all YAML), hadolint (Dockerfiles)
 
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Secret scan (gitleaks)
-        uses: gitleaks/gitleaks-action@v2
-      - name: IP/credential audit
-        run: |
-          ! git diff origin/main...HEAD | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
-          ! git diff origin/main...HEAD | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
+**security job:** trufflehog (verified secrets), IP/credential grep audit
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install test deps
-        run: pip install pytest netboxlabs-diode-sdk
-      - name: Run tests
-        run: pytest platform/services/netbox/deployment/tests/ -v
-```
+**test job** (Phase 2, planned): pytest with mocked SDK dependencies
 
 ### Semaphore Integration (unchanged)
 
@@ -260,7 +251,7 @@ No changes needed to Semaphore. GitHub Actions handles pre-merge quality; Semaph
 | 1a. Ruff (Python lint) | Low | High | None |
 | 1b. ShellCheck | Low | High | None |
 | 1c. Ansible-lint | Low | Medium | None |
-| 1e. gitleaks | Low | High | None |
+| 1e. trufflehog | Low | High | None |
 | 5. GitHub Actions CI | Medium | High | Phases 1a-1e |
 | 2. Python unit tests | Medium | High | pytest setup |
 | 4b. Dependabot | Low | Medium | None |
@@ -268,7 +259,7 @@ No changes needed to Semaphore. GitHub Actions handles pre-merge quality; Semaph
 | 3. BATS tests | Medium | Low | BATS setup |
 | 4c. Bandit | Low | Medium | None |
 
-**Recommended first commit:** Add `ruff` config to `pyproject.toml`, add `.ansible-lint`, add a GitHub Actions workflow with ruff + shellcheck + ansible-lint + gitleaks. This single PR establishes the quality gate for all future work.
+**Recommended first commit:** Add `ruff` config to `pyproject.toml`, add `.ansible-lint`, add a GitHub Actions workflow with ruff + shellcheck + ansible-lint + trufflehog. This single PR establishes the quality gate for all future work.
 
 ---
 
