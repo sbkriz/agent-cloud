@@ -92,7 +92,7 @@
         from dcim.models import Device
         from django.db.models import Count
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         STRATEGY = '{{ duplicate_strategy }}'
 
         dupes = Device.objects.values('name').annotate(c=Count('id')).filter(c__gt=1)
@@ -137,7 +137,7 @@
         {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Device
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         OLD = '{{ replace_device_old }}'
         NEW = '{{ replace_device_new }}'
 
@@ -170,7 +170,7 @@
         {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Region, Site
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         OLD = '{{ migrate_region_old }}'
         NEW = '{{ migrate_region_new }}'
 
@@ -215,7 +215,7 @@
         {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Rack, Device
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         OLD = '{{ migrate_rack_old }}'
         NEW = '{{ migrate_rack_new }}'
 
@@ -260,7 +260,7 @@
         {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Region, Rack, Location, Site, Device
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         deleted = 0
 
         # Orphan regions (no sites reference them)
