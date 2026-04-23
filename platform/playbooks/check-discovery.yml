@@ -87,23 +87,24 @@
         msg: "{{ _vm_stats.stdout_lines | default(['Failed to query virtualization data']) }}"
 
     - name: Fix GPS coordinates on Site if still None
-      ansible.builtin.command:
-        cmd: >-
-          docker exec netbox-netbox-1
-          /opt/netbox/netbox/manage.py shell -c
-          "from dcim.models import Site;
-          s = Site.objects.get(name='{{ discovery_site_name | default('Uhstray.io Datacenter') }}');
-          lat = {{ discovery_site_latitude | default('0') }};
-          lon = {{ discovery_site_longitude | default('0') }};
-          if lat and lon and (s.latitude is None or s.longitude is None):
-              s.latitude = lat;
-              s.longitude = lon;
-              s.save();
-              print(f'SET GPS: lat={s.latitude} lon={s.longitude}');
-          elif not lat or not lon:
-              print('SKIP: discovery_site_latitude/longitude not set in inventory');
-          else:
-              print(f'GPS already set: lat={s.latitude} lon={s.longitude}')"
+      ansible.builtin.shell: |
+        docker exec netbox-netbox-1 /opt/netbox/netbox/manage.py shell -c "
+        from dcim.models import Site
+        s = Site.objects.get(name='{{ discovery_site_name | default("Uhstray.io Datacenter") }}')
+        lat = {{ discovery_site_latitude | default(0) }}
+        lon = {{ discovery_site_longitude | default(0) }}
+        if lat and lon and (s.latitude is None or s.longitude is None):
+            s.latitude = lat
+            s.longitude = lon
+            s.save()
+            print('SET GPS: lat=' + str(s.latitude) + ' lon=' + str(s.longitude))
+        elif not lat or not lon:
+            print('SKIP: discovery_site_latitude/longitude not set in inventory')
+        else:
+            print('GPS already set: lat=' + str(s.latitude) + ' lon=' + str(s.longitude))
+        "
+      args:
+        executable: /bin/bash
       register: _gps_fix
       changed_when: "'SET GPS' in _gps_fix.stdout"
 

@@ -88,7 +88,7 @@
     # ── Cleanup Duplicates ──────────────────────────────────────
     - name: "Cleanup duplicate devices with strategy — {{ duplicate_strategy }}"
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Device
         from django.db.models import Count
 
@@ -134,7 +134,7 @@
     # ── Replace Device ──────────────────────────────────────────
     - name: "Replace device with new entry"
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Device
 
         DRY = {{ dry_run | bool | lower }}
@@ -167,7 +167,7 @@
     # ── Migrate Region ──────────────────────────────────────────
     - name: "Migrate sites between regions"
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Region, Site
 
         DRY = {{ dry_run | bool | lower }}
@@ -212,7 +212,7 @@
     # ── Migrate Rack ────────────────────────────────────────────
     - name: "Migrate devices between racks"
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Rack, Device
 
         DRY = {{ dry_run | bool | lower }}
@@ -257,7 +257,7 @@
     # ── Delete Orphans ──────────────────────────────────────────
     - name: Delete orphaned regions, racks, and locations
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Region, Rack, Location, Site, Device
 
         DRY = {{ dry_run | bool | lower }}
