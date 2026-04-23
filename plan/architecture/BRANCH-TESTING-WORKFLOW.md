@@ -77,7 +77,7 @@ All deploy templates include a `survey_vars` field for `service_branch`. In the 
 
 ### API Usage
 
-Deploy a specific branch via the Semaphore API:
+**Deploy playbooks** (deploy code on target VM from a branch):
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -89,13 +89,36 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
   "http://$SEMAPHORE_HOST:3000/api/project/1/tasks"
 ```
 
-Deploy from main (rollback or post-merge deploy):
+**Any playbook** (run Semaphore's own repo clone from a branch — works for validation, cleanup, secrets, and all non-deploy playbooks):
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "template_id": 56,
+    "project_id": 1,
+    "git_branch": "feat/my-feature"
+  }' \
+  "http://$SEMAPHORE_HOST:3000/api/project/1/tasks"
+```
+
+The `git_branch` parameter tells Semaphore to clone the repo from that branch before running the playbook. This works for **every** template — deploy, validation, cleanup, secrets, SSH, infrastructure. No merge to main required.
+
+**Rollback** (deploy from main):
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"template_id": 47, "project_id": 1}' \
   "http://$SEMAPHORE_HOST:3000/api/project/1/tasks"
 ```
+
+### Two Branch Mechanisms
+
+| Parameter | What it does | Scope |
+| --------- | ------------ | ----- |
+| `git_branch` | Semaphore clones the repo from this branch (the playbook itself runs from the branch) | All templates |
+| `service_branch` | The playbook's internal git clone on the target VM uses this branch | Deploy templates only |
+
+For deploy playbooks, use both: `git_branch` gets the latest playbook code, `service_branch` deploys the branch code on the target VM.
 
 ## Safety Properties
 

@@ -23,6 +23,9 @@
 #   Migrate devices from one rack to another:
 #     -e migrate_rack_old="Main Rack" -e migrate_rack_new="Server Rack"
 #
+#   Remove Devices that migrated to VirtualMachines:
+#     -e cleanup_vm_orphans=true
+#
 #   Delete orphaned objects (regions/racks/locations with 0 references):
 #     -e delete_orphans=true
 #
@@ -88,11 +91,11 @@
     # ── Cleanup Duplicates ──────────────────────────────────────
     - name: "Cleanup duplicate devices with strategy — {{ duplicate_strategy }}"
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Device
         from django.db.models import Count
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         STRATEGY = '{{ duplicate_strategy }}'
 
         dupes = Device.objects.values('name').annotate(c=Count('id')).filter(c__gt=1)
@@ -131,13 +134,46 @@
         msg: "{{ _dupes_result.stdout_lines | default([]) }}"
       when: cleanup_duplicates | bool
 
+    # ── Remove Devices that migrated to VirtualMachines ──────────
+    - name: "Remove Devices that now exist as VirtualMachines"
+      ansible.builtin.shell: |
+        {{ _manage }} << 'PYSCRIPT'
+        from dcim.models import Device
+        from virtualization.models import VirtualMachine
+
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
+
+        vm_names = set(VirtualMachine.objects.values_list('name', flat=True))
+        orphan_devices = Device.objects.filter(name__in=vm_names)
+        deleted = 0
+        for d in orphan_devices:
+            action = 'WOULD DELETE' if DRY else 'DELETE'
+            print(f'{action}: Device {d.name} (id={d.id} role={d.role}) — exists as VirtualMachine')
+            if not DRY:
+                d.delete()
+            deleted += 1
+
+        verb = 'Would delete' if DRY else 'Deleted'
+        print(f'{verb} {deleted} Device→VirtualMachine orphans')
+        if not DRY:
+            print(f'Remaining devices: {Device.objects.count()}')
+        PYSCRIPT
+      register: _vm_orphans_result
+      when: cleanup_vm_orphans | default(false) | bool
+      changed_when: "not (dry_run | bool) and 'Deleted 0' not in _vm_orphans_result.stdout"
+
+    - name: VM orphan cleanup results
+      ansible.builtin.debug:
+        msg: "{{ _vm_orphans_result.stdout_lines | default([]) }}"
+      when: cleanup_vm_orphans | default(false) | bool
+
     # ── Replace Device ──────────────────────────────────────────
     - name: "Replace device with new entry"
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Device
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         OLD = '{{ replace_device_old }}'
         NEW = '{{ replace_device_new }}'
 
@@ -167,10 +203,10 @@
     # ── Migrate Region ──────────────────────────────────────────
     - name: "Migrate sites between regions"
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Region, Site
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         OLD = '{{ migrate_region_old }}'
         NEW = '{{ migrate_region_new }}'
 
@@ -212,10 +248,10 @@
     # ── Migrate Rack ────────────────────────────────────────────
     - name: "Migrate devices between racks"
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Rack, Device
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         OLD = '{{ migrate_rack_old }}'
         NEW = '{{ migrate_rack_new }}'
 
@@ -257,10 +293,10 @@
     # ── Delete Orphans ──────────────────────────────────────────
     - name: Delete orphaned regions, racks, and locations
       ansible.builtin.shell: |
-        {{ _manage }} << PYSCRIPT
+        {{ _manage }} << 'PYSCRIPT'
         from dcim.models import Region, Rack, Location, Site, Device
 
-        DRY = {{ dry_run | bool | lower }}
+        DRY = {{ 'True' if (dry_run | bool) else 'False' }}
         deleted = 0
 
         # Orphan regions (no sites reference them)
