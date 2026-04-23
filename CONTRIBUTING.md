@@ -36,6 +36,8 @@ Step 3 ensures documentation stays current with every PR — update the top-leve
 - `docs/<description>` — documentation only
 - `ci/<description>` — CI/CD changes
 - `refactor/<description>` — code restructuring without behavior change
+- `chore/<description>` — maintenance, cleanup, dependency updates
+- `security/<description>` — security fixes or hardening
 
 ### Commit Messages
 

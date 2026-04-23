@@ -190,7 +190,7 @@ Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 
 **All code changes go through feature branches and pull requests — never push directly to main.**
 
-1. Create a feature branch from `main`: `git checkout -b feat/<description>` or `fix/<description>`
+1. Create a feature branch from `main`: `git checkout -b <type>/<description>` (types: `feat`, `fix`, `docs`, `ci`, `refactor`, `chore`, `security`)
 2. Commit changes on the feature branch
 3. **Before creating a PR**, update documentation:
    - Update the top-level `README.md` if the PR adds features, services, or changes the repo structure
