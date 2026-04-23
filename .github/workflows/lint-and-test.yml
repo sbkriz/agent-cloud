@@ -35,7 +35,7 @@ jobs:
           failure-threshold: warning
 
       - name: HCL format check
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
       - run: find platform/services/openbao -name '*.hcl' -exec terraform fmt -check {} +
 
   security:
